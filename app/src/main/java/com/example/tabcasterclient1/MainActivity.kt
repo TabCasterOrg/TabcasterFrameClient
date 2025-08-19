@@ -1,5 +1,6 @@
 package com.example.tabcasterclient1
 
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
@@ -7,6 +8,8 @@ import android.graphics.Rect
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.DisplayMetrics
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
@@ -31,10 +34,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvStatus: TextView
     private lateinit var ivFrame: ImageView
     private lateinit var tvFrameInfo: TextView
+    private lateinit var tvResolution: TextView
 
     private var udpReceiver: UDPReceiver? = null
     private var executorService: ExecutorService? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    // Screen resolution info
+    private var screenWidth: Int = 0
+    private var screenHeight: Int = 0
+    private var refreshRate: Float = 60.0f
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -47,8 +56,12 @@ class MainActivity : AppCompatActivity() {
         tvStatus = findViewById(R.id.tv_status)
         ivFrame = findViewById(R.id.iv_frame)
         tvFrameInfo = findViewById(R.id.tv_frame_info)
+        tvResolution = findViewById(R.id.tv_resolution) // Add this TextView to your layout
 
         executorService = Executors.newSingleThreadExecutor()
+
+        // Get screen resolution
+        getScreenResolution()
 
         btnConnect.setOnClickListener {
             connectToServer()
@@ -60,6 +73,31 @@ class MainActivity : AppCompatActivity() {
 
         updateStatus("Ready")
         updateFrameInfo("No frame data")
+        updateResolutionInfo()
+    }
+
+    private fun getScreenResolution() {
+        val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        val display = windowManager.defaultDisplay
+        val displayMetrics = DisplayMetrics()
+
+        // Get real display metrics (including navigation bar, status bar, etc.)
+        display.getRealMetrics(displayMetrics)
+
+        screenWidth = displayMetrics.widthPixels
+        screenHeight = displayMetrics.heightPixels
+
+        // Get refresh rate
+        refreshRate = display.refreshRate
+
+        // For landscape orientation, ensure width > height
+        if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            if (screenWidth < screenHeight) {
+                val temp = screenWidth
+                screenWidth = screenHeight
+                screenHeight = temp
+            }
+        }
     }
 
     private fun connectToServer() {
@@ -119,6 +157,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun updateResolutionInfo() {
+        mainHandler.post {
+            tvResolution.text = "Device Resolution: ${screenWidth}x${screenHeight} @ ${refreshRate}Hz"
+        }
+    }
+
     private fun displayFrame(bitmap: Bitmap, frameId: Int, frameTime: Long) {
         mainHandler.post {
             ivFrame.setImageBitmap(bitmap)
@@ -154,6 +198,8 @@ class MainActivity : AppCompatActivity() {
         private var packetsReceived = 0
         private var frameStartTime = 0L
         private var framesReceived = 0
+        private var handshakeComplete = false
+        private var displayReady = false
 
         fun stop() {
             running = false
@@ -167,26 +213,29 @@ class MainActivity : AppCompatActivity() {
                 socket?.soTimeout = 10000 // 10 seconds timeout
 
                 val serverAddress = InetAddress.getByName(serverIP)
-                updateStatus("Socket created. Sending handshake...")
+                updateStatus("Socket created. Starting handshake...")
 
-                // Send initial handshake message
-                val handshakeMsg = "HELLO"
-                val sendData = handshakeMsg.toByteArray()
-                val sendPacket = DatagramPacket(sendData, sendData.size, serverAddress, serverPort)
-                socket?.send(sendPacket)
-                updateStatus("Sent handshake to $serverIP:$serverPort")
+                // Handshake Phase
+                if (!performHandshake(serverAddress)) {
+                    updateStatus("Handshake failed")
+                    return
+                }
 
-                // Buffer to receive packets
-                val buffer = ByteArray(2048) // Increased buffer size for frame data
+                // Start streaming
+                if (!requestStreaming(serverAddress)) {
+                    updateStatus("Failed to start streaming")
+                    return
+                }
 
+                // Main receiving loop
+                val buffer = ByteArray(2048)
                 while (running) {
                     val packet = DatagramPacket(buffer, buffer.size)
                     try {
                         socket?.receive(packet)
                         processReceivedPacket(packet.data, packet.length)
                     } catch (e: SocketTimeoutException) {
-                        // Check for timeout periodically
-                        updateStatus("Waiting for server response...")
+                        updateStatus("Waiting for data...")
                     }
                 }
             } catch (e: Exception) {
@@ -198,18 +247,147 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        private fun performHandshake(serverAddress: InetAddress): Boolean {
+            try {
+                // Step 1: Send HELLO
+                updateStatus("Sending HELLO...")
+                if (!sendMessage(serverAddress, "HELLO")) return false
+
+                // Wait for HELLO_ACK
+                if (!waitForMessage("HELLO_ACK", 5000)) {
+                    updateStatus("Did not receive HELLO_ACK")
+                    return false
+                }
+                updateStatus("Received HELLO_ACK")
+
+                // Step 2: Send resolution information
+                val resolutionMsg = "RESOLUTION:$screenWidth:$screenHeight:$refreshRate"
+                updateStatus("Sending resolution: ${screenWidth}x${screenHeight}@${refreshRate}Hz")
+                if (!sendMessage(serverAddress, resolutionMsg)) return false
+
+                // Wait for RESOLUTION_ACK
+                if (!waitForMessage("RESOLUTION_ACK", 10000)) {
+                    updateStatus("Did not receive RESOLUTION_ACK")
+                    return false
+                }
+                updateStatus("Resolution acknowledged by server")
+
+                // Wait for DISPLAY_READY message
+                val displayReadyMsg = waitForDisplayReady(15000)
+                if (displayReadyMsg == null) {
+                    updateStatus("Display setup timeout")
+                    return false
+                }
+
+                // Parse display ready message: "DISPLAY_READY:output:widthxheight:x:y"
+                updateStatus("Display ready: $displayReadyMsg")
+                handshakeComplete = true
+                displayReady = true
+
+                return true
+
+            } catch (e: Exception) {
+                updateStatus("Handshake error: ${e.localizedMessage}")
+                return false
+            }
+        }
+
+        private fun requestStreaming(serverAddress: InetAddress): Boolean {
+            try {
+                updateStatus("Requesting stream start...")
+                if (!sendMessage(serverAddress, "START_STREAM")) return false
+
+                // Wait for STREAM_STARTED
+                if (!waitForMessage("STREAM_STARTED", 5000)) {
+                    updateStatus("Did not receive STREAM_STARTED")
+                    return false
+                }
+                updateStatus("Streaming started")
+                return true
+
+            } catch (e: Exception) {
+                updateStatus("Stream request error: ${e.localizedMessage}")
+                return false
+            }
+        }
+
+        private fun sendMessage(serverAddress: InetAddress, message: String): Boolean {
+            return try {
+                val sendData = message.toByteArray()
+                val sendPacket = DatagramPacket(sendData, sendData.size, serverAddress, serverPort)
+                socket?.send(sendPacket)
+                true
+            } catch (e: Exception) {
+                updateStatus("Send error: ${e.localizedMessage}")
+                false
+            }
+        }
+
+        private fun waitForMessage(expectedMessage: String, timeoutMs: Long): Boolean {
+            val buffer = ByteArray(1024)
+            val startTime = System.currentTimeMillis()
+
+            try {
+                socket?.soTimeout = timeoutMs.toInt()
+
+                while (System.currentTimeMillis() - startTime < timeoutMs) {
+                    val packet = DatagramPacket(buffer, buffer.size)
+                    socket?.receive(packet)
+
+                    val receivedMessage = String(packet.data, 0, packet.length)
+                    if (receivedMessage == expectedMessage) {
+                        return true
+                    } else if (receivedMessage.startsWith("DISPLAY_ERROR:") ||
+                        receivedMessage.startsWith("RESOLUTION_ERROR:")) {
+                        updateStatus("Server error: $receivedMessage")
+                        return false
+                    }
+                }
+                return false
+            } catch (e: SocketTimeoutException) {
+                return false
+            } catch (e: Exception) {
+                updateStatus("Wait error: ${e.localizedMessage}")
+                return false
+            }
+        }
+
+        private fun waitForDisplayReady(timeoutMs: Long): String? {
+            val buffer = ByteArray(1024)
+            val startTime = System.currentTimeMillis()
+
+            try {
+                socket?.soTimeout = timeoutMs.toInt()
+
+                while (System.currentTimeMillis() - startTime < timeoutMs) {
+                    val packet = DatagramPacket(buffer, buffer.size)
+                    socket?.receive(packet)
+
+                    val receivedMessage = String(packet.data, 0, packet.length)
+                    if (receivedMessage.startsWith("DISPLAY_READY:")) {
+                        return receivedMessage
+                    } else if (receivedMessage.startsWith("DISPLAY_ERROR:")) {
+                        updateStatus("Server error: $receivedMessage")
+                        return null
+                    }
+                }
+                return null
+            } catch (e: SocketTimeoutException) {
+                return null
+            } catch (e: Exception) {
+                updateStatus("Display ready wait error: ${e.localizedMessage}")
+                return null
+            }
+        }
+
         private fun processReceivedPacket(data: ByteArray, length: Int) {
+            if (!handshakeComplete || !displayReady) return
+
             try {
                 // Check if this is a frame info packet (starts with "INFO:")
                 val dataStr = String(data, 0, length)
                 if (dataStr.startsWith("INFO:")) {
                     handleFrameInfo(dataStr)
-                    return
-                }
-
-                // Check if this is a handshake acknowledgment
-                if (dataStr.startsWith("HELLO_ACK")) {
-                    updateStatus("Handshake acknowledged by server")
                     return
                 }
 

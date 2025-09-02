@@ -86,50 +86,11 @@
     </LinearLayout>
 
     <!-- Status Section -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:background="@drawable/ic_launcher_background"
-        android:padding="12dp"
-        android:layout_marginBottom="16dp">
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Status Information"
-            android:textSize="16sp"
-            android:textStyle="bold"
-            android:layout_marginBottom="8dp" />
-
-        <TextView
-            android:id="@+id/tv_resolution"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Device Resolution: Loading..."
-            android:textSize="14sp"
-            android:textColor="@android:color/holo_blue_dark"
-            android:layout_marginBottom="4dp" />
-
-        <TextView
-            android:id="@+id/tv_status"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Status: Ready"
-            android:textSize="14sp"
-            android:layout_marginBottom="4dp" />
-
-        <TextView
-            android:id="@+id/tv_frame_info"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Frame Info: No frame data"
-            android:textSize="12sp"
-            android:textColor="@android:color/darker_gray" />
-
-    </LinearLayout>
 
     <!-- Video Display Section -->
+
+
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -145,6 +106,30 @@
             android:textSize="16sp"
             android:textStyle="bold"
             android:layout_marginBottom="8dp" />
+        <TextView
+            android:id="@+id/tv_frame_info"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Frame Info: No frame data"
+            android:textColor="@android:color/darker_gray"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/tv_resolution"
+            android:layout_width="161dp"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="4dp"
+            android:text="Device Resolution: Loading..."
+            android:textColor="@android:color/holo_blue_dark"
+            android:textSize="14sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:text="Status Information"
+            android:textSize="16sp"
+            android:textStyle="bold" />
 
         <ScrollView
             android:layout_width="match_parent"
@@ -161,6 +146,14 @@
                 android:contentDescription="Video frame display" />
 
         </ScrollView>
+
+        <TextView
+            android:id="@+id/tv_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="4dp"
+            android:text="Status: Ready"
+            android:textSize="14sp" />
 
     </LinearLayout>
 

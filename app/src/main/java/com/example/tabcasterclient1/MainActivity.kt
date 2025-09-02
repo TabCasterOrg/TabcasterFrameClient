@@ -45,6 +45,11 @@ class MainActivity : AppCompatActivity() {
     private var screenHeight: Int = 0
     private var refreshRate: Float = 60.0f
 
+    // Server resolution (might be different from client if fallback used)
+    private var serverWidth: Int = 0
+    private var serverHeight: Int = 0
+    private var serverRefreshRate: Float = 60.0f
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -56,7 +61,7 @@ class MainActivity : AppCompatActivity() {
         tvStatus = findViewById(R.id.tv_status)
         ivFrame = findViewById(R.id.iv_frame)
         tvFrameInfo = findViewById(R.id.tv_frame_info)
-        tvResolution = findViewById(R.id.tv_resolution) // Add this TextView to your layout
+        tvResolution = findViewById(R.id.tv_resolution)
 
         executorService = Executors.newSingleThreadExecutor()
 
@@ -98,6 +103,11 @@ class MainActivity : AppCompatActivity() {
                 screenHeight = temp
             }
         }
+
+        // Initially, server resolution matches client
+        serverWidth = screenWidth
+        serverHeight = screenHeight
+        serverRefreshRate = refreshRate
     }
 
     private fun connectToServer() {
@@ -139,6 +149,12 @@ class MainActivity : AppCompatActivity() {
         updateStatus("Disconnected")
         updateFrameInfo("No frame data")
 
+        // Reset server resolution to match client
+        serverWidth = screenWidth
+        serverHeight = screenHeight
+        serverRefreshRate = refreshRate
+        updateResolutionInfo()
+
         // Clear the image view
         mainHandler.post {
             ivFrame.setImageBitmap(null)
@@ -159,8 +175,21 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateResolutionInfo() {
         mainHandler.post {
-            tvResolution.text = "Device Resolution: ${screenWidth}x${screenHeight} @ ${refreshRate}Hz"
+            val resolutionText = if (serverWidth == screenWidth && serverHeight == screenHeight) {
+                "Resolution: ${screenWidth}x${screenHeight} @ ${refreshRate}Hz"
+            } else {
+                "Client: ${screenWidth}x${screenHeight} @ ${refreshRate}Hz\n" +
+                        "Server: ${serverWidth}x${serverHeight} @ ${serverRefreshRate}Hz (fallback)"
+            }
+            tvResolution.text = resolutionText
         }
+    }
+
+    private fun updateServerResolution(width: Int, height: Int, refreshRate: Float) {
+        serverWidth = width
+        serverHeight = height
+        serverRefreshRate = refreshRate
+        updateResolutionInfo()
     }
 
     private fun displayFrame(bitmap: Bitmap, frameId: Int, frameTime: Long) {
@@ -265,12 +294,22 @@ class MainActivity : AppCompatActivity() {
                 updateStatus("Sending resolution: ${screenWidth}x${screenHeight}@${refreshRate}Hz")
                 if (!sendMessage(serverAddress, resolutionMsg)) return false
 
-                // Wait for RESOLUTION_ACK
-                if (!waitForMessage("RESOLUTION_ACK", 10000)) {
-                    updateStatus("Did not receive RESOLUTION_ACK")
+                // Wait for RESOLUTION_ACK or RESOLUTION_CHANGED
+                val resolutionResponse = waitForResolutionResponse(15000)
+                if (resolutionResponse == null) {
+                    updateStatus("No resolution response from server")
                     return false
                 }
-                updateStatus("Resolution acknowledged by server")
+
+                // Handle resolution response
+                if (resolutionResponse == "RESOLUTION_ACK") {
+                    updateStatus("Resolution accepted by server")
+                } else if (resolutionResponse.startsWith("RESOLUTION_CHANGED:")) {
+                    handleResolutionChanged(resolutionResponse)
+                } else {
+                    updateStatus("Unexpected resolution response: $resolutionResponse")
+                    return false
+                }
 
                 // Wait for DISPLAY_READY message
                 val displayReadyMsg = waitForDisplayReady(15000)
@@ -289,6 +328,69 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 updateStatus("Handshake error: ${e.localizedMessage}")
                 return false
+            }
+        }
+
+        private fun handleResolutionChanged(message: String) {
+            // Parse "RESOLUTION_CHANGED:1920x1080:60.0"
+            try {
+                val parts = message.split(":")
+                if (parts.size >= 3 && parts[0] == "RESOLUTION_CHANGED") {
+                    val resolutionPart = parts[1] // "1920x1080"
+                    val refreshRatePart = parts[2] // "60.0"
+
+                    val resolutionParts = resolutionPart.split("x")
+                    if (resolutionParts.size == 2) {
+                        val width = resolutionParts[0].toInt()
+                        val height = resolutionParts[1].toInt()
+                        val refreshRate = refreshRatePart.toFloat()
+
+                        updateServerResolution(width, height, refreshRate)
+                        updateStatus("Server using fallback resolution: ${width}x${height}@${refreshRate}Hz")
+
+                        // Show a toast to notify user
+                        mainHandler.post {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Server using fallback resolution: ${width}x${height}@${refreshRate}Hz",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                updateStatus("Error parsing resolution change: ${e.localizedMessage}")
+            }
+        }
+
+        private fun waitForResolutionResponse(timeoutMs: Long): String? {
+            val buffer = ByteArray(1024)
+            val startTime = System.currentTimeMillis()
+
+            try {
+                socket?.soTimeout = timeoutMs.toInt()
+
+                while (System.currentTimeMillis() - startTime < timeoutMs) {
+                    val packet = DatagramPacket(buffer, buffer.size)
+                    socket?.receive(packet)
+
+                    val receivedMessage = String(packet.data, 0, packet.length)
+
+                    if (receivedMessage == "RESOLUTION_ACK" ||
+                        receivedMessage.startsWith("RESOLUTION_CHANGED:")) {
+                        return receivedMessage
+                    } else if (receivedMessage.startsWith("RESOLUTION_ERROR:")) {
+                        updateStatus("Server error: $receivedMessage")
+                        return null
+                    }
+                    // Continue waiting for the right message
+                }
+                return null
+            } catch (e: SocketTimeoutException) {
+                return null
+            } catch (e: Exception) {
+                updateStatus("Wait error: ${e.localizedMessage}")
+                return null
             }
         }
 

@@ -9,13 +9,18 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.DisplayMetrics
+import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
+import android.widget.LinearLayout
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -31,10 +36,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var etPort: EditText
     private lateinit var btnConnect: Button
     private lateinit var btnDisconnect: Button
+    private lateinit var btnFullscreen: Button
     private lateinit var tvStatus: TextView
     private lateinit var ivFrame: ImageView
     private lateinit var tvFrameInfo: TextView
     private lateinit var tvResolution: TextView
+    private lateinit var controlsLayout: LinearLayout
 
     private var udpReceiver: UDPReceiver? = null
     private var executorService: ExecutorService? = null
@@ -50,24 +57,55 @@ class MainActivity : AppCompatActivity() {
     private var serverHeight: Int = 0
     private var serverRefreshRate: Float = 60.0f
 
+    // Fullscreen state
+    private var isFullscreen = false
+    private var windowInsetsController: WindowInsetsControllerCompat? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        etServerIP = findViewById(R.id.et_server_ip)
-        etPort = findViewById(R.id.et_port)
-        btnConnect = findViewById(R.id.btn_connect)
-        btnDisconnect = findViewById(R.id.btn_disconnect)
-        tvStatus = findViewById(R.id.tv_status)
-        ivFrame = findViewById(R.id.iv_frame)
-        tvFrameInfo = findViewById(R.id.tv_frame_info)
-        tvResolution = findViewById(R.id.tv_resolution)
-
+        initializeViews()
+        setupWindowInsets()
         executorService = Executors.newSingleThreadExecutor()
 
         // Get screen resolution
         getScreenResolution()
 
+        setupClickListeners()
+        updateStatus("Ready")
+        updateFrameInfo("No frame data")
+        updateResolutionInfo()
+    }
+
+    private fun initializeViews() {
+        etServerIP = findViewById(R.id.et_server_ip)
+        etPort = findViewById(R.id.et_port)
+        btnConnect = findViewById(R.id.btn_connect)
+        btnDisconnect = findViewById(R.id.btn_disconnect)
+        btnFullscreen = findViewById(R.id.btn_fullscreen)
+        tvStatus = findViewById(R.id.tv_status)
+        ivFrame = findViewById(R.id.iv_frame)
+        tvFrameInfo = findViewById(R.id.tv_frame_info)
+        tvResolution = findViewById(R.id.tv_resolution)
+        controlsLayout = findViewById(R.id.controls_layout)
+
+        // Configure ImageView for better scaling
+        ivFrame.scaleType = ImageView.ScaleType.MATRIX
+        ivFrame.adjustViewBounds = true
+
+        // Set initial fullscreen button text
+        btnFullscreen.text = "Fullscreen"
+        btnFullscreen.isEnabled = false // Enable only when streaming
+    }
+
+    private fun setupWindowInsets() {
+        windowInsetsController = ViewCompat.getWindowInsetsController(window.decorView)
+        windowInsetsController?.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    }
+
+    private fun setupClickListeners() {
         btnConnect.setOnClickListener {
             connectToServer()
         }
@@ -76,9 +114,64 @@ class MainActivity : AppCompatActivity() {
             disconnectFromServer()
         }
 
-        updateStatus("Ready")
-        updateFrameInfo("No frame data")
-        updateResolutionInfo()
+        btnFullscreen.setOnClickListener {
+            toggleFullscreen()
+        }
+
+        // Double-tap ImageView to toggle fullscreen
+        ivFrame.setOnClickListener {
+            if (btnFullscreen.isEnabled) {
+                toggleFullscreen()
+            }
+        }
+    }
+
+    private fun toggleFullscreen() {
+        if (isFullscreen) {
+            exitFullscreen()
+        } else {
+            enterFullscreen()
+        }
+    }
+
+    private fun enterFullscreen() {
+        isFullscreen = true
+
+        // Hide system bars
+        windowInsetsController?.hide(WindowInsetsCompat.Type.systemBars())
+
+        // Hide controls
+        controlsLayout.visibility = View.GONE
+
+        // Make ImageView fill the screen and center the image
+        val layoutParams = ivFrame.layoutParams
+        layoutParams.width = LinearLayout.LayoutParams.MATCH_PARENT
+        layoutParams.height = LinearLayout.LayoutParams.MATCH_PARENT
+        ivFrame.layoutParams = layoutParams
+        ivFrame.scaleType = ImageView.ScaleType.FIT_CENTER
+
+        btnFullscreen.text = "Exit Fullscreen"
+
+        Toast.makeText(this, "Fullscreen mode - tap to exit", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun exitFullscreen() {
+        isFullscreen = false
+
+        // Show system bars
+        windowInsetsController?.show(WindowInsetsCompat.Type.systemBars())
+
+        // Show controls
+        controlsLayout.visibility = View.VISIBLE
+
+        // Reset ImageView size and scaling
+        val layoutParams = ivFrame.layoutParams
+        layoutParams.width = LinearLayout.LayoutParams.MATCH_PARENT
+        layoutParams.height = 0 // Use layout_weight instead
+        ivFrame.layoutParams = layoutParams
+        ivFrame.scaleType = ImageView.ScaleType.FIT_CENTER
+
+        btnFullscreen.text = "Fullscreen"
     }
 
     private fun getScreenResolution() {
@@ -131,6 +224,7 @@ class MainActivity : AppCompatActivity() {
 
         btnConnect.isEnabled = false
         btnDisconnect.isEnabled = true
+        btnFullscreen.isEnabled = true
         etServerIP.isEnabled = false
         etPort.isEnabled = false
 
@@ -141,8 +235,14 @@ class MainActivity : AppCompatActivity() {
         udpReceiver?.stop()
         udpReceiver = null
 
+        // Exit fullscreen if active
+        if (isFullscreen) {
+            exitFullscreen()
+        }
+
         btnConnect.isEnabled = true
         btnDisconnect.isEnabled = false
+        btnFullscreen.isEnabled = false
         etServerIP.isEnabled = true
         etPort.isEnabled = true
 
@@ -194,8 +294,41 @@ class MainActivity : AppCompatActivity() {
 
     private fun displayFrame(bitmap: Bitmap, frameId: Int, frameTime: Long) {
         mainHandler.post {
-            ivFrame.setImageBitmap(bitmap)
+            // Scale the bitmap to fit the display properly
+            val scaledBitmap = scaleBitmapToFit(bitmap)
+            ivFrame.setImageBitmap(scaledBitmap)
+
             updateFrameInfo("Frame $frameId (${bitmap.width}x${bitmap.height}) - ${frameTime}ms")
+        }
+    }
+
+    private fun scaleBitmapToFit(originalBitmap: Bitmap): Bitmap {
+        // Get ImageView dimensions
+        val viewWidth = ivFrame.width
+        val viewHeight = ivFrame.height
+
+        // If ImageView not measured yet, return original
+        if (viewWidth <= 0 || viewHeight <= 0) {
+            return originalBitmap
+        }
+
+        val originalWidth = originalBitmap.width.toFloat()
+        val originalHeight = originalBitmap.height.toFloat()
+
+        // Calculate scale factors
+        val scaleX = viewWidth / originalWidth
+        val scaleY = viewHeight / originalHeight
+        val scaleFactor = minOf(scaleX, scaleY) // Use smaller scale to maintain aspect ratio
+
+        // Calculate new dimensions
+        val newWidth = (originalWidth * scaleFactor).toInt()
+        val newHeight = (originalHeight * scaleFactor).toInt()
+
+        // Only scale if necessary (avoid unnecessary scaling)
+        return if (scaleFactor != 1.0f && newWidth > 0 && newHeight > 0) {
+            Bitmap.createScaledBitmap(originalBitmap, newWidth, newHeight, true)
+        } else {
+            originalBitmap
         }
     }
 
@@ -212,6 +345,19 @@ class MainActivity : AppCompatActivity() {
         val height: Int
     )
 
+    data class XImageInfo(
+        val width: Int,
+        val height: Int,
+        val depth: Int,
+        val bitsPerPixel: Int,
+        val bytesPerLine: Int,
+        val bitmapUnit: Int,
+        val bitmapBitOrder: Int,
+        val redMask: Long,
+        val greenMask: Long,
+        val blueMask: Long
+    )
+
     private inner class UDPReceiver(
         private val serverIP: String,
         private val serverPort: Int
@@ -221,6 +367,7 @@ class MainActivity : AppCompatActivity() {
         private var running = true
         private var socket: DatagramSocket? = null
         private var frameInfo: FrameInfo? = null
+        private var xImageInfo: XImageInfo? = null
         private val framePackets = mutableMapOf<Int, ByteArray>()
         private var expectedPackets = 0
         private var currentFrameId = -1
@@ -276,32 +423,28 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // ... Keep all existing handshake methods unchanged ...
         private fun performHandshake(serverAddress: InetAddress): Boolean {
             try {
-                // Step 1: Send HELLO
                 updateStatus("Sending HELLO...")
                 if (!sendMessage(serverAddress, "HELLO")) return false
 
-                // Wait for HELLO_ACK
                 if (!waitForMessage("HELLO_ACK", 5000)) {
                     updateStatus("Did not receive HELLO_ACK")
                     return false
                 }
                 updateStatus("Received HELLO_ACK")
 
-                // Step 2: Send resolution information
                 val resolutionMsg = "RESOLUTION:$screenWidth:$screenHeight:$refreshRate"
                 updateStatus("Sending resolution: ${screenWidth}x${screenHeight}@${refreshRate}Hz")
                 if (!sendMessage(serverAddress, resolutionMsg)) return false
 
-                // Wait for RESOLUTION_ACK or RESOLUTION_CHANGED
                 val resolutionResponse = waitForResolutionResponse(15000)
                 if (resolutionResponse == null) {
                     updateStatus("No resolution response from server")
                     return false
                 }
 
-                // Handle resolution response
                 if (resolutionResponse == "RESOLUTION_ACK") {
                     updateStatus("Resolution accepted by server")
                 } else if (resolutionResponse.startsWith("RESOLUTION_CHANGED:")) {
@@ -311,14 +454,12 @@ class MainActivity : AppCompatActivity() {
                     return false
                 }
 
-                // Wait for DISPLAY_READY message
                 val displayReadyMsg = waitForDisplayReady(15000)
                 if (displayReadyMsg == null) {
                     updateStatus("Display setup timeout")
                     return false
                 }
 
-                // Parse display ready message: "DISPLAY_READY:output:widthxheight:x:y"
                 updateStatus("Display ready: $displayReadyMsg")
                 handshakeComplete = true
                 displayReady = true
@@ -331,13 +472,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // ... Keep other existing methods (handleResolutionChanged, waitForResolutionResponse, etc.) ...
+
         private fun handleResolutionChanged(message: String) {
-            // Parse "RESOLUTION_CHANGED:1920x1080:60.0"
             try {
                 val parts = message.split(":")
                 if (parts.size >= 3 && parts[0] == "RESOLUTION_CHANGED") {
-                    val resolutionPart = parts[1] // "1920x1080"
-                    val refreshRatePart = parts[2] // "60.0"
+                    val resolutionPart = parts[1]
+                    val refreshRatePart = parts[2]
 
                     val resolutionParts = resolutionPart.split("x")
                     if (resolutionParts.size == 2) {
@@ -348,7 +490,6 @@ class MainActivity : AppCompatActivity() {
                         updateServerResolution(width, height, refreshRate)
                         updateStatus("Server using fallback resolution: ${width}x${height}@${refreshRate}Hz")
 
-                        // Show a toast to notify user
                         mainHandler.post {
                             Toast.makeText(
                                 this@MainActivity,
@@ -383,7 +524,6 @@ class MainActivity : AppCompatActivity() {
                         updateStatus("Server error: $receivedMessage")
                         return null
                     }
-                    // Continue waiting for the right message
                 }
                 return null
             } catch (e: SocketTimeoutException) {
@@ -399,7 +539,6 @@ class MainActivity : AppCompatActivity() {
                 updateStatus("Requesting stream start...")
                 if (!sendMessage(serverAddress, "START_STREAM")) return false
 
-                // Wait for STREAM_STARTED
                 if (!waitForMessage("STREAM_STARTED", 5000)) {
                     updateStatus("Did not receive STREAM_STARTED")
                     return false
@@ -486,15 +625,22 @@ class MainActivity : AppCompatActivity() {
             if (!handshakeComplete || !displayReady) return
 
             try {
-                // Check if this is a frame info packet (starts with "INFO:")
                 val dataStr = String(data, 0, length)
+
+                // Check for XImage info packet
+                if (dataStr.startsWith("XIMAGE_INFO:")) {
+                    handleXImageInfo(dataStr)
+                    return
+                }
+
+                // Check for legacy INFO packet (fallback)
                 if (dataStr.startsWith("INFO:")) {
                     handleFrameInfo(dataStr)
                     return
                 }
 
-                // Check if this is a frame data packet (has PacketHeader)
-                if (length >= 16) { // Minimum size for PacketHeader (4 * 4 bytes)
+                // Handle frame data packets
+                if (length >= 16) {
                     handleFramePacket(data, length)
                 }
             } catch (e: Exception) {
@@ -502,26 +648,50 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        private fun handleXImageInfo(infoPacket: String) {
+            try {
+                val parts = infoPacket.split(":")
+                if (parts.size >= 11 && parts[0] == "XIMAGE_INFO") {
+                    xImageInfo = XImageInfo(
+                        width = parts[1].toInt(),
+                        height = parts[2].toInt(),
+                        depth = parts[3].toInt(),
+                        bitsPerPixel = parts[4].toInt(),
+                        bytesPerLine = parts[5].toInt(),
+                        bitmapUnit = parts[6].toInt(),
+                        bitmapBitOrder = parts[7].toInt(),
+                        redMask = parts[8].toLong(),
+                        greenMask = parts[9].toLong(),
+                        blueMask = parts[10].toLong()
+                    )
+
+                    frameInfo = FrameInfo(xImageInfo!!.width, xImageInfo!!.height)
+                    updateStatus("XImage info received: ${xImageInfo!!.width}x${xImageInfo!!.height}, ${xImageInfo!!.bitsPerPixel} bpp")
+                } else {
+                    updateStatus("Invalid XImage info format")
+                }
+            } catch (e: Exception) {
+                updateStatus("XImage info parse error: ${e.localizedMessage}")
+            }
+        }
+
         private fun handleFrameInfo(infoPacket: String) {
-            // Parse "INFO:width:height"
             val parts = infoPacket.split(":")
             if (parts.size == 3 && parts[0] == "INFO") {
                 val width = parts[1].toIntOrNull()
                 val height = parts[2].toIntOrNull()
                 if (width != null && height != null) {
                     frameInfo = FrameInfo(width, height)
-                    updateStatus("Frame info received: ${width}x${height}")
-                } else {
-                    updateStatus("Invalid frame info format")
+                    xImageInfo = null
+                    updateStatus("RGB frame info received: ${width}x${height}")
                 }
             }
         }
 
         private fun handleFramePacket(data: ByteArray, length: Int) {
             try {
-                // Parse PacketHeader (assuming network byte order - big-endian)
                 val buffer = ByteBuffer.wrap(data)
-                buffer.order(ByteOrder.BIG_ENDIAN) // Server uses network byte order
+                buffer.order(ByteOrder.BIG_ENDIAN)
 
                 val header = PacketHeader(
                     frameId = buffer.int,
@@ -530,15 +700,12 @@ class MainActivity : AppCompatActivity() {
                     dataSize = buffer.int
                 )
 
-                // Validate header
                 if (header.dataSize < 0 || header.dataSize > length - 16) {
                     updateStatus("Invalid packet header")
                     return
                 }
 
-                // Handle new frame
                 if (header.frameId != currentFrameId) {
-                    // New frame started
                     if (currentFrameId >= 0 && packetsReceived > 0) {
                         updateStatus("Frame ${currentFrameId}: ${packetsReceived}/${expectedPackets} packets")
                     }
@@ -550,21 +717,16 @@ class MainActivity : AppCompatActivity() {
                     frameStartTime = System.currentTimeMillis()
                 }
 
-                // Store packet data
                 val packetData = ByteArray(header.dataSize)
                 buffer.get(packetData, 0, header.dataSize)
                 framePackets[header.packetId] = packetData
                 packetsReceived++
 
-                // Check if frame is complete
                 if (packetsReceived == expectedPackets) {
                     val frameTime = System.currentTimeMillis() - frameStartTime
                     reconstructAndDisplayFrame(frameTime)
-                } else {
-                    // Periodic update for large frames
-                    if (packetsReceived % 50 == 0) {
-                        updateStatus("Frame ${currentFrameId}: ${packetsReceived}/${expectedPackets}")
-                    }
+                } else if (packetsReceived % 50 == 0) {
+                    updateStatus("Frame ${currentFrameId}: ${packetsReceived}/${expectedPackets}")
                 }
             } catch (e: Exception) {
                 updateStatus("Frame packet error: ${e.localizedMessage}")
@@ -572,19 +734,15 @@ class MainActivity : AppCompatActivity() {
         }
 
         private fun reconstructAndDisplayFrame(frameTime: Long) {
-            val info = frameInfo ?: return
-
             try {
-                // Calculate total frame size
                 val totalSize = framePackets.values.sumOf { it.size }
-                val rgbData = ByteArray(totalSize)
+                val frameData = ByteArray(totalSize)
 
-                // Reconstruct frame by concatenating packets in order
                 var offset = 0
                 for (packetId in 0 until expectedPackets) {
                     val packetData = framePackets[packetId]
                     if (packetData != null) {
-                        System.arraycopy(packetData, 0, rgbData, offset, packetData.size)
+                        System.arraycopy(packetData, 0, frameData, offset, packetData.size)
                         offset += packetData.size
                     } else {
                         updateStatus("Missing packet $packetId in frame $currentFrameId")
@@ -592,13 +750,19 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-                // Convert RGB data to Bitmap
-                val bitmap = createBitmapFromRGB(rgbData, info.width, info.height)
+                val bitmap = if (xImageInfo != null) {
+                    createBitmapFromXImage(frameData, xImageInfo!!)
+                } else if (frameInfo != null) {
+                    createBitmapFromRGB(frameData, frameInfo!!.width, frameInfo!!.height)
+                } else {
+                    updateStatus("No format info available for frame reconstruction")
+                    return
+                }
+
                 if (bitmap != null) {
                     framesReceived++
                     displayFrame(bitmap, currentFrameId, frameTime)
 
-                    // Update status every 10 frames
                     if (framesReceived % 10 == 0) {
                         updateStatus("Received $framesReceived frames")
                     }
@@ -611,40 +775,163 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // ... Keep all existing bitmap creation methods (createBitmapFromXImage, createBitmapFromRGB, etc.) ...
+
+        private fun createBitmapFromXImage(xImageData: ByteArray, xImg: XImageInfo): Bitmap? {
+            try {
+                val expectedSize = xImg.bytesPerLine * xImg.height
+                if (xImageData.size != expectedSize) {
+                    updateStatus("XImage data size mismatch: got ${xImageData.size}, expected $expectedSize")
+                    return null
+                }
+
+                val bitmap = Bitmap.createBitmap(xImg.width, xImg.height, Bitmap.Config.ARGB_8888)
+                val pixels = IntArray(xImg.width * xImg.height)
+
+                when (xImg.bitsPerPixel) {
+                    32 -> convertXImage32bpp(xImageData, pixels, xImg)
+                    24 -> convertXImage24bpp(xImageData, pixels, xImg)
+                    16 -> convertXImage16bpp(xImageData, pixels, xImg)
+                    else -> {
+                        updateStatus("Unsupported XImage format: ${xImg.bitsPerPixel} bpp")
+                        return null
+                    }
+                }
+
+                bitmap.setPixels(pixels, 0, xImg.width, 0, 0, xImg.width, xImg.height)
+                return bitmap
+
+            } catch (e: Exception) {
+                updateStatus("XImage bitmap creation error: ${e.localizedMessage}")
+                return null
+            }
+        }
+
+        private fun convertXImage32bpp(data: ByteArray, pixels: IntArray, xImg: XImageInfo) {
+            val bytesPerPixel = 4
+            var pixelIndex = 0
+
+            val redShift = getShiftFromMask(xImg.redMask)
+            val greenShift = getShiftFromMask(xImg.greenMask)
+            val blueShift = getShiftFromMask(xImg.blueMask)
+
+            for (y in 0 until xImg.height) {
+                var lineOffset = y * xImg.bytesPerLine
+
+                for (x in 0 until xImg.width) {
+                    val pixel = ((data[lineOffset + 3].toInt() and 0xFF) shl 24) or
+                            ((data[lineOffset + 2].toInt() and 0xFF) shl 16) or
+                            ((data[lineOffset + 1].toInt() and 0xFF) shl 8) or
+                            (data[lineOffset].toInt() and 0xFF)
+
+                    val r = ((pixel and xImg.redMask.toInt()) ushr redShift) and 0xFF
+                    val g = ((pixel and xImg.greenMask.toInt()) ushr greenShift) and 0xFF
+                    val b = ((pixel and xImg.blueMask.toInt()) ushr blueShift) and 0xFF
+
+                    pixels[pixelIndex++] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+                    lineOffset += bytesPerPixel
+                }
+            }
+        }
+
+        private fun convertXImage24bpp(data: ByteArray, pixels: IntArray, xImg: XImageInfo) {
+            val bytesPerPixel = 3
+            var pixelIndex = 0
+
+            for (y in 0 until xImg.height) {
+                var lineOffset = y * xImg.bytesPerLine
+
+                for (x in 0 until xImg.width) {
+                    val r = data[lineOffset].toInt() and 0xFF
+                    val g = data[lineOffset + 1].toInt() and 0xFF
+                    val b = data[lineOffset + 2].toInt() and 0xFF
+
+                    pixels[pixelIndex++] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+                    lineOffset += bytesPerPixel
+                }
+            }
+        }
+
+        private fun convertXImage16bpp(data: ByteArray, pixels: IntArray, xImg: XImageInfo) {
+            val bytesPerPixel = 2
+            var pixelIndex = 0
+
+            for (y in 0 until xImg.height) {
+                var lineOffset = y * xImg.bytesPerLine
+
+                for (x in 0 until xImg.width) {
+                    // Read 16-bit pixel (little-endian)
+                    val pixel = ((data[lineOffset + 1].toInt() and 0xFF) shl 8) or
+                            (data[lineOffset].toInt() and 0xFF)
+
+                    // Common 16-bit formats: 565 RGB or 555 RGB
+                    val r: Int
+                    val g: Int
+                    val b: Int
+
+                    if (xImg.redMask == 0xF800L && xImg.greenMask == 0x07E0L && xImg.blueMask == 0x001FL) {
+                        // 565 RGB format
+                        r = ((pixel and 0xF800) shr 8) or ((pixel and 0xF800) shr 13)
+                        g = ((pixel and 0x07E0) shr 3) or ((pixel and 0x07E0) shr 9)
+                        b = ((pixel and 0x001F) shl 3) or ((pixel and 0x001F) shr 2)
+                    } else {
+                        // 555 RGB format or other - use generic mask extraction
+                        val redShift = getShiftFromMask(xImg.redMask)
+                        val greenShift = getShiftFromMask(xImg.greenMask)
+                        val blueShift = getShiftFromMask(xImg.blueMask)
+
+                        r = ((pixel and xImg.redMask.toInt()) ushr redShift) shl 3
+                        g = ((pixel and xImg.greenMask.toInt()) ushr greenShift) shl 3
+                        b = ((pixel and xImg.blueMask.toInt()) ushr blueShift) shl 3
+                    }
+
+                    pixels[pixelIndex++] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+
+                    lineOffset += bytesPerPixel
+                }
+            }
+        }
+
+        private fun getShiftFromMask(mask: Long): Int {
+            if (mask == 0L) return 0
+            var shift = 0
+            var tempMask = mask
+            while ((tempMask and 1L) == 0L) {
+                tempMask = tempMask ushr 1
+                shift++
+            }
+            return shift
+        }
+
+        // Keep existing createBitmapFromRGB method for fallback RGB support
         private fun createBitmapFromRGB(rgbData: ByteArray, width: Int, height: Int): Bitmap? {
             try {
-                // Verify data size
-                val expectedSize = width * height * 3 // 3 bytes per pixel (RGB)
+                val expectedSize = width * height * 3
                 if (rgbData.size != expectedSize) {
                     updateStatus("RGB data size mismatch: got ${rgbData.size}, expected $expectedSize")
                     return null
                 }
 
-                // Create bitmap
                 val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-
-                // Convert RGB to ARGB pixels
                 val pixels = IntArray(width * height)
+
                 for (i in pixels.indices) {
                     val rgbIndex = i * 3
                     val r = rgbData[rgbIndex].toInt() and 0xFF
                     val g = rgbData[rgbIndex + 1].toInt() and 0xFF
                     val b = rgbData[rgbIndex + 2].toInt() and 0xFF
-                    pixels[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b // ARGB format
+                    pixels[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
                 }
 
-                // Set pixels to bitmap
                 bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
-
                 return bitmap
 
             } catch (e: Exception) {
-                updateStatus("Bitmap creation error: ${e.localizedMessage}")
+                updateStatus("RGB bitmap creation error: ${e.localizedMessage}")
                 return null
             }
         }
     }
-
     override fun onDestroy() {
         super.onDestroy()
         disconnectFromServer()

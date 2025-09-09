@@ -61,6 +61,14 @@ class MainActivity : AppCompatActivity() {
     private var isFullscreen = false
     private var windowInsetsController: WindowInsetsControllerCompat? = null
 
+    //DeltaHeader class
+    data class DeltaHeader(
+        val isDelta: Boolean,
+        val x: Int,
+        val y: Int,
+        val width: Int,
+        val height: Int
+    )
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -688,18 +696,37 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        private fun handleFramePacket(data: ByteArray, length: Int) {
-            try {
-                val buffer = ByteBuffer.wrap(data)
-                buffer.order(ByteOrder.BIG_ENDIAN)
 
-                val header = PacketHeader(
-                    frameId = buffer.int,
-                    packetId = buffer.int,
-                    totalPackets = buffer.int,
-                    dataSize = buffer.int
-                )
+            private fun handleFramePacket(data: ByteArray, length: Int) {
+                try {
+                    val buffer = ByteBuffer.wrap(data)
+                    buffer.order(ByteOrder.BIG_ENDIAN)
 
+                    val header = PacketHeader(
+                        frameId = buffer.int,
+                        packetId = buffer.int,
+                        totalPackets = buffer.int,
+                        dataSize = buffer.int
+                    )
+
+                    // Read delta header if present
+                    val deltaHeader = if (header.dataSize > 20) {
+                        DeltaHeader(
+                            isDelta = buffer.int != 0,
+                            x = buffer.int,
+                            y = buffer.int,
+                            width = buffer.int,
+                            height = buffer.int
+                        )
+                    } else {
+                        null
+                    }
+
+                    val actualDataSize = if (deltaHeader != null) {
+                        header.dataSize - 20 // Subtract delta header size
+                    } else {
+                        header.dataSize
+                    }
                 if (header.dataSize < 0 || header.dataSize > length - 16) {
                     updateStatus("Invalid packet header")
                     return
@@ -775,7 +802,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // ... Keep all existing bitmap creation methods (createBitmapFromXImage, createBitmapFromRGB, etc.) ...
 
         private fun createBitmapFromXImage(xImageData: ByteArray, xImg: XImageInfo): Bitmap? {
             try {

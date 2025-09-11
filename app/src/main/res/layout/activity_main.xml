@@ -134,6 +134,19 @@
                 android:textColor="#000000"
                 />
 
+            <!-- Disconnect Button (initially hidden) -->
+            <!-- Eventually, maybe, make this a state of the connected button -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/disconnectButton"
+                android:layout_width="104dp"
+                android:layout_height="match_parent"
+                android:layout_marginStart="8dp"
+                android:layout_marginEnd="8dp"
+                android:layout_weight="7"
+                android:backgroundTint="#c11003"
+                android:text="Disconnect"
+                android:visibility="visible" />
+
             <!-- Servers Button -->
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/serversButton"
@@ -158,16 +171,6 @@
                 android:layout_weight="0"
                 android:gravity="center"
                 app:icon="@drawable/hide_icon" />
-
-            <!-- Disconnect Button (initially hidden) -->
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/disconnectButton"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="2"
-                android:backgroundTint="#f44336"
-                android:text="Disconnect"
-                android:visibility="gone" />
 
 
         </LinearLayout>

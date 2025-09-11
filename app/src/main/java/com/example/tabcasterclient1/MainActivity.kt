@@ -155,6 +155,7 @@ class MainActivity : AppCompatActivity() {
         else if (InetAddresses.isNumericAddress(serverIP)){
 
             Toast.makeText(this, "Connecting to: $serverIP", Toast.LENGTH_SHORT).show()
+            btnDisconnect.visibility = View.VISIBLE
 
             // Start Sending UDP Packets!
             udpReceiver = UDPReceiver(serverIP, portNumber)
@@ -197,6 +198,9 @@ class MainActivity : AppCompatActivity() {
         mainHandler.post {
             ivFrame.setImageBitmap(null)
         }
+
+        // Re-disable the Disconnect button
+        btnDisconnect.visibility = View.GONE
     }
 
     private fun updateStatus(status: String) {

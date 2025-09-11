@@ -18,6 +18,7 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -36,10 +37,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var etServerIP: EditText
     private lateinit var btnConnect: Button
     private lateinit var btnDisconnect: Button
+    private lateinit var btnHide: Button
     private lateinit var tvStatus: TextView
     private lateinit var ivFrame: ImageView
     private lateinit var tvFrameInfo: TextView
     private lateinit var tvResolution: TextView
+    private lateinit var bottomBar: LinearLayout
 
     private var udpReceiver: UDPReceiver? = null
     private var executorService: ExecutorService? = null
@@ -62,10 +65,12 @@ class MainActivity : AppCompatActivity() {
         etServerIP = findViewById(R.id.serverInput)
         btnConnect = findViewById(R.id.connectButton)
         btnDisconnect = findViewById(R.id.disconnectButton)
+        btnHide = findViewById(R.id.hideButton)
         tvStatus = findViewById(R.id.tv_status)
         ivFrame = findViewById(R.id.iv_frame)
         tvFrameInfo = findViewById(R.id.tv_frame_info)
         tvResolution = findViewById(R.id.tv_resolution)
+        bottomBar = findViewById(R.id.controlsLayout)
 
         executorService = Executors.newSingleThreadExecutor()
 
@@ -78,6 +83,10 @@ class MainActivity : AppCompatActivity() {
 
         btnDisconnect.setOnClickListener {
             disconnectFromServer()
+        }
+
+        btnHide.setOnClickListener {
+            hideBar()
         }
 
         updateStatus("Ready")
@@ -239,6 +248,16 @@ class MainActivity : AppCompatActivity() {
             ivFrame.setImageBitmap(bitmap)
             updateFrameInfo("Frame $frameId (${bitmap.width}x${bitmap.height}) - ${frameTime}ms")
         }
+    }
+
+    private fun hideBar(){
+        bottomBar.visibility = View.GONE
+        Toast.makeText(this, "Hiding controls bar", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun showBar(){
+        bottomBar.visibility = View.GONE
+        Toast.makeText(this, "Showing controls bar", Toast.LENGTH_SHORT).show()
     }
 
     // Data classes for frame handling

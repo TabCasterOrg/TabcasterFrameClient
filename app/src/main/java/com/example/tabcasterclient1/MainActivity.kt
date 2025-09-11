@@ -12,6 +12,7 @@ import android.os.Looper
 import android.text.Editable
 import android.text.TextWatcher
 import android.util.DisplayMetrics
+import android.util.Log
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
@@ -19,6 +20,7 @@ import android.widget.EditText
 import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -150,15 +152,28 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Please enter server IP", Toast.LENGTH_SHORT).show()
             return
         }
+        else if (InetAddresses.isNumericAddress(serverIP)){
 
-        udpReceiver = UDPReceiver(serverIP, portNumber)
-        executorService?.submit(udpReceiver)
+            Toast.makeText(this, "Connecting to: $serverIP", Toast.LENGTH_SHORT).show()
 
-        btnConnect.isEnabled = false
-        btnDisconnect.isEnabled = true
-        etServerIP.isEnabled = false
+            // Start Sending UDP Packets!
+            udpReceiver = UDPReceiver(serverIP, portNumber)
+            executorService?.submit(udpReceiver)
 
-        updateStatus("Connecting to $serverIP")
+            btnConnect.isEnabled = false
+            btnDisconnect.isEnabled = true
+            etServerIP.isEnabled = false
+
+            updateStatus("Connecting to $serverIP")
+        } else {
+            // This is a dialog box, to explain how to input the IP address.
+            val builder: AlertDialog.Builder =
+                AlertDialog.Builder(this) // Use 'this as the context.
+            builder.setTitle("Invalid IP Address")
+            builder.setMessage("$serverIP is not a valid IP address.\nIP Addresses usually follow the format of XXX.XXX.XX.XXX:XXXX\n\nTo retreive your IP address on Linux systems with NetworkManager installed, use `nmcli` in the Terminal to find your IP address.\nWhen a valid IP address is entered, the help button will become the connect button, and you can attempt to connect to TabCaster.")
+            val dialog: AlertDialog = builder.create()
+            dialog.show()
+        }
     }
 
     private fun disconnectFromServer() {

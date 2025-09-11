@@ -67,7 +67,7 @@ class MainActivity : AppCompatActivity() {
         btnDisconnect = findViewById(R.id.disconnectButton)
         btnHide = findViewById(R.id.hideButton)
         tvStatus = findViewById(R.id.tv_status)
-        ivFrame = findViewById(R.id.iv_frame)
+        ivFrame = findViewById(R.id.iv_frame) // This is the variable for the display itself
         tvFrameInfo = findViewById(R.id.tv_frame_info)
         tvResolution = findViewById(R.id.tv_resolution)
         bottomBar = findViewById(R.id.controlsLayout)
@@ -87,6 +87,10 @@ class MainActivity : AppCompatActivity() {
 
         btnHide.setOnClickListener {
             hideBar()
+        }
+
+        ivFrame.setOnClickListener {
+            showBar()
         }
 
         updateStatus("Ready")
@@ -250,14 +254,19 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Show And Hide Bar
     private fun hideBar(){
-        bottomBar.visibility = View.GONE
-        Toast.makeText(this, "Hiding controls bar", Toast.LENGTH_SHORT).show()
+        if (bottomBar.visibility == View.VISIBLE){
+            bottomBar.visibility = View.GONE
+            Toast.makeText(this, "Hiding controls bar. Tap the screen to show again", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun showBar(){
-        bottomBar.visibility = View.GONE
-        Toast.makeText(this, "Showing controls bar", Toast.LENGTH_SHORT).show()
+        if (bottomBar.visibility == View.GONE){
+            bottomBar.visibility = View.VISIBLE
+            Toast.makeText(this, "Showing controls bar", Toast.LENGTH_SHORT).show()
+        }
     }
 
     // Data classes for frame handling

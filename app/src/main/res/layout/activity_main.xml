@@ -56,21 +56,15 @@
             android:textSize="16sp"
             android:textStyle="bold" />
 
-        <ScrollView
-            android:layout_width="match_parent"
-            android:layout_height="match_parent">
-
             <ImageView
                 android:id="@+id/iv_frame"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="match_parent"
                 android:layout_gravity="center"
                 android:adjustViewBounds="true"
                 android:background="@android:color/white"
                 android:contentDescription="Video frame display"
                 android:scaleType="fitCenter" />
-
-        </ScrollView>
 
         <TextView
             android:id="@+id/tv_status"

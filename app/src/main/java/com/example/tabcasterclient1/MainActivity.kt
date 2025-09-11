@@ -3,13 +3,11 @@ package com.example.tabcasterclient1
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.Canvas
-import android.graphics.Paint
-import android.graphics.Rect
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.DisplayMetrics
+import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
@@ -17,6 +15,9 @@ import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -32,6 +33,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var etPort: EditText
     private lateinit var btnConnect: Button
     private lateinit var btnDisconnect: Button
+    private lateinit var btnFullscreen: Button
     private lateinit var tvStatus: TextView
     private lateinit var ivFrame: ImageView
     private lateinit var tvFrameInfo: TextView
@@ -40,6 +42,21 @@ class MainActivity : AppCompatActivity() {
     private var udpReceiver: UDPReceiver? = null
     private var executorService: ExecutorService? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    // Add dedicated thread pool for WebP decoding
+    private var decodingExecutor: ExecutorService? = null
+    private val maxPendingFrames = 2 // Drop frames if more than this are pending
+
+    // Frame dropping mechanism
+    @Volatile
+    private var pendingDecodes = 0
+    @Volatile
+    private var droppedFrames = 0
+
+    // Decode time tracking
+    private var totalDecodeTime = 0L
+    private var decodedFrameCount = 0
+    private var avgDecodeTime = 0f
 
     // Screen resolution info
     private var screenWidth: Int = 0
@@ -51,35 +68,75 @@ class MainActivity : AppCompatActivity() {
     private var serverHeight: Int = 0
     private var serverRefreshRate: Float = 60.0f
 
+    // Fullscreen state
+    private var isFullscreen: Boolean = false
+    private var isStreaming: Boolean = false
+
+    // Bitmap optimization
+    private var previousBitmap: Bitmap? = null
+
+    // Optimized bitmap options for WebP
+    private val optimizedBitmapOptions = BitmapFactory.Options().apply {
+        inMutable = true
+        inPreferredConfig = Bitmap.Config.ARGB_8888 // Better for WebP decoding
+        inSampleSize = 1
+        inDither = false
+        inPreferQualityOverSpeed = false // Prioritize speed
+        inTempStorage = ByteArray(16 * 1024) // Reuse temp storage
+    }
+
+    // FPS and latency tracking
+    private var lastFrameTime = 0L
+    private var frameCount = 0
+    private var fpsStartTime = 0L
+    private var currentFPS = 0f
+
+    // UI update throttling
+    private var lastFrameInfoUpdate = 0L
+    private var lastStatusUpdate = 0L
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        etServerIP = findViewById(R.id.et_server_ip)
-        etPort = findViewById(R.id.et_port)
-        btnConnect = findViewById(R.id.btn_connect)
-        btnDisconnect = findViewById(R.id.btn_disconnect)
-        tvStatus = findViewById(R.id.tv_status)
-        ivFrame = findViewById(R.id.iv_frame)
-        tvFrameInfo = findViewById(R.id.tv_frame_info)
-        tvResolution = findViewById(R.id.tv_resolution)
+        initializeViews()
+        setupClickListeners()
 
         executorService = Executors.newSingleThreadExecutor()
+        // Initialize single decoding thread (one thread is better for sequential frame processing)
+        decodingExecutor = Executors.newSingleThreadExecutor()
 
-        // Get screen resolution
         getScreenResolution()
-
-        btnConnect.setOnClickListener {
-            connectToServer()
-        }
-
-        btnDisconnect.setOnClickListener {
-            disconnectFromServer()
-        }
 
         updateStatus("Ready")
         updateFrameInfo("No frame data")
         updateResolutionInfo()
+        updateFullscreenButton()
+    }
+
+    private fun initializeViews() {
+        etServerIP = findViewById(R.id.et_server_ip)
+        etPort = findViewById(R.id.et_port)
+        btnConnect = findViewById(R.id.btn_connect)
+        btnDisconnect = findViewById(R.id.btn_disconnect)
+        btnFullscreen = findViewById(R.id.btn_fullscreen)
+        tvStatus = findViewById(R.id.tv_status)
+        ivFrame = findViewById(R.id.iv_frame)
+        tvFrameInfo = findViewById(R.id.tv_frame_info)
+        tvResolution = findViewById(R.id.tv_resolution)
+    }
+
+    private fun setupClickListeners() {
+        btnConnect.setOnClickListener { connectToServer() }
+        btnDisconnect.setOnClickListener { disconnectFromServer() }
+        btnFullscreen.setOnClickListener { toggleFullscreen() }
+
+        // Allow clicking on image to toggle fullscreen when streaming
+        ivFrame.setOnClickListener {
+            if (isStreaming) {
+                toggleFullscreen()
+            }
+        }
     }
 
     private fun getScreenResolution() {
@@ -87,16 +144,11 @@ class MainActivity : AppCompatActivity() {
         val display = windowManager.defaultDisplay
         val displayMetrics = DisplayMetrics()
 
-        // Get real display metrics (including navigation bar, status bar, etc.)
         display.getRealMetrics(displayMetrics)
-
         screenWidth = displayMetrics.widthPixels
         screenHeight = displayMetrics.heightPixels
-
-        // Get refresh rate
         refreshRate = display.refreshRate
 
-        // For landscape orientation, ensure width > height
         if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
             if (screenWidth < screenHeight) {
                 val temp = screenWidth
@@ -105,7 +157,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Initially, server resolution matches client
         serverWidth = screenWidth
         serverHeight = screenHeight
         serverRefreshRate = refreshRate
@@ -141,6 +192,23 @@ class MainActivity : AppCompatActivity() {
     private fun disconnectFromServer() {
         udpReceiver?.stop()
         udpReceiver = null
+        isStreaming = false
+
+        // Clean up bitmap
+        previousBitmap?.recycle()
+        previousBitmap = null
+
+        // Reset FPS tracking
+        currentFPS = 0f
+        frameCount = 0
+        fpsStartTime = 0L
+
+        // Reset all frame processing counters
+        pendingDecodes = 0
+        droppedFrames = 0
+        totalDecodeTime = 0L
+        decodedFrameCount = 0
+        avgDecodeTime = 0f
 
         btnConnect.isEnabled = true
         btnDisconnect.isEnabled = false
@@ -149,6 +217,7 @@ class MainActivity : AppCompatActivity() {
 
         updateStatus("Disconnected")
         updateFrameInfo("No frame data")
+        updateFullscreenButton()
 
         // Reset server resolution to match client
         serverWidth = screenWidth
@@ -160,16 +229,105 @@ class MainActivity : AppCompatActivity() {
         mainHandler.post {
             ivFrame.setImageBitmap(null)
         }
-    }
 
-    private fun updateStatus(status: String) {
-        mainHandler.post {
-            tvStatus.text = "Status: $status"
+        // Exit fullscreen if active
+        if (isFullscreen) {
+            exitFullscreen()
         }
     }
 
+    private fun toggleFullscreen() {
+        if (!isStreaming) return
+
+        if (isFullscreen) {
+            exitFullscreen()
+        } else {
+            enterFullscreen()
+        }
+    }
+
+    private fun enterFullscreen() {
+        isFullscreen = true
+
+        // Hide system UI
+        val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
+        windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
+
+        // Hide all UI elements except the image
+        etServerIP.visibility = View.GONE
+        etPort.visibility = View.GONE
+        btnConnect.visibility = View.GONE
+        btnDisconnect.visibility = View.GONE
+        btnFullscreen.visibility = View.GONE
+        tvStatus.visibility = View.GONE
+        tvFrameInfo.visibility = View.GONE
+        tvResolution.visibility = View.GONE
+
+        // Make image fill screen
+        ivFrame.scaleType = ImageView.ScaleType.MATRIX
+
+        updateFullscreenButton()
+    }
+
+    private fun exitFullscreen() {
+        isFullscreen = false
+
+        // Show system UI
+        val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
+        windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
+
+        // Show all UI elements
+        etServerIP.visibility = View.VISIBLE
+        etPort.visibility = View.VISIBLE
+        btnConnect.visibility = View.VISIBLE
+        btnDisconnect.visibility = View.VISIBLE
+        btnFullscreen.visibility = View.VISIBLE
+        tvStatus.visibility = View.VISIBLE
+        tvFrameInfo.visibility = View.VISIBLE
+        tvResolution.visibility = View.VISIBLE
+
+        // Reset image scaling
+        ivFrame.scaleType = ImageView.ScaleType.FIT_CENTER
+
+        updateFullscreenButton()
+    }
+
+    private fun updateFullscreenButton() {
+        mainHandler.post {
+            btnFullscreen.isEnabled = isStreaming
+            btnFullscreen.text = if (isFullscreen) "Exit Fullscreen" else "Fullscreen"
+        }
+    }
+
+    // Throttled status updates
+    private fun updateStatus(status: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastStatusUpdate > 100) { // 10fps max for status updates
+            lastStatusUpdate = now
+            mainHandler.post {
+                tvStatus.text = "Status: $status"
+            }
+        }
+    }
+
+    // Regular frame info update (for non-optimized calls)
     private fun updateFrameInfo(info: String) {
         mainHandler.post {
+            tvFrameInfo.text = info
+        }
+    }
+
+    // Enhanced frame info with decode timing and average decode time
+    private fun updateOptimizedFrameInfo(frameId: Int, latency: Long, width: Int, height: Int, decodeTime: Long) {
+        val fpsText = if (currentFPS > 0) String.format("%.1f", currentFPS) else "---"
+        val avgDecodeText = if (avgDecodeTime > 0) String.format("%.1f", avgDecodeTime) else "---"
+
+        val info = "Frame: $frameId | ${width}x${height} | Net: ${latency}ms | Decode: ${decodeTime}ms (avg: ${avgDecodeText}ms) | ${fpsText} FPS"
+
+        if (droppedFrames > 0) {
+            tvFrameInfo.text = "$info | Dropped: $droppedFrames"
+        } else {
             tvFrameInfo.text = info
         }
     }
@@ -193,16 +351,89 @@ class MainActivity : AppCompatActivity() {
         updateResolutionInfo()
     }
 
-    private fun displayFrame(bitmap: Bitmap, frameId: Int, frameTime: Long, format: String, originalSize: Int, compressedSize: Int) {
-        mainHandler.post {
-            ivFrame.setImageBitmap(bitmap)
-            val compressionInfo = if (compressedSize > 0) {
-                val ratio = originalSize.toFloat() / compressedSize
-                " (${format}, ${compressedSize} bytes, ${String.format("%.1f", ratio)}x compression)"
-            } else {
-                " (${format})"
+    // FPS calculation
+    private fun updateFPSCalculation() {
+        val now = System.currentTimeMillis()
+
+        if (fpsStartTime == 0L) {
+            fpsStartTime = now
+            frameCount = 0
+        }
+
+        frameCount++
+
+        // Calculate FPS every second
+        val elapsed = now - fpsStartTime
+        if (elapsed >= 1000) {
+            currentFPS = (frameCount * 1000f) / elapsed
+            fpsStartTime = now
+            frameCount = 0
+        }
+    }
+
+    // Optimized frame display with background decoding and frame dropping
+    private fun displayFrame(webpData: ByteArray, frameId: Int, frameTime: Long, compressedSize: Int) {
+        // Frame dropping: Skip if too many frames are pending decode
+        if (pendingDecodes >= maxPendingFrames) {
+            droppedFrames++
+            if (droppedFrames % 5 == 0) {
+                // Update status with frame dropping info
+                updateStatus("Streaming ($pendingDecodes pending, dropped $droppedFrames frames)")
             }
-            updateFrameInfo("Frame $frameId (${bitmap.width}x${bitmap.height}) - ${frameTime}ms$compressionInfo")
+            return
+        }
+
+        pendingDecodes++
+
+        // Decode WebP on background thread to avoid blocking UI
+        decodingExecutor?.submit {
+            val decodeStartTime = System.nanoTime()
+
+            try {
+                // WebP decoding happens on background thread
+                val bitmap = BitmapFactory.decodeByteArray(webpData, 0, webpData.size, optimizedBitmapOptions)
+
+                val decodeTimeMs = (System.nanoTime() - decodeStartTime) / 1_000_000
+
+                // Update decode time statistics
+                synchronized(this) {
+                    totalDecodeTime += decodeTimeMs
+                    decodedFrameCount++
+                    avgDecodeTime = totalDecodeTime.toFloat() / decodedFrameCount
+                }
+
+                if (bitmap != null) {
+                    // Only UI updates happen on main thread
+                    mainHandler.post {
+                        try {
+                            // Recycle previous bitmap to prevent memory leaks
+                            previousBitmap?.recycle()
+
+                            // Display new frame
+                            ivFrame.setImageBitmap(bitmap)
+                            previousBitmap = bitmap
+
+                            // Update FPS calculation
+                            updateFPSCalculation()
+
+                            // Throttled UI updates (max 60 FPS for UI)
+                            val now = System.currentTimeMillis()
+                            if (now - lastFrameInfoUpdate > 16) {
+                                lastFrameInfoUpdate = now
+                                updateOptimizedFrameInfo(frameId, frameTime, bitmap.width, bitmap.height, decodeTimeMs)
+                            }
+                        } catch (e: Exception) {
+                            updateFrameInfo("Error displaying frame: ${e.message}")
+                        }
+                    }
+                } else {
+                    updateFrameInfo("Failed to decode WebP frame $frameId")
+                }
+            } catch (e: Exception) {
+                updateFrameInfo("WebP decode error: ${e.message}")
+            } finally {
+                pendingDecodes--
+            }
         }
     }
 
@@ -216,8 +447,7 @@ class MainActivity : AppCompatActivity() {
 
     data class FrameInfo(
         val width: Int,
-        val height: Int,
-        val format: String = "WEBP" // Default to WebP now
+        val height: Int
     )
 
     private inner class UDPReceiver(
@@ -238,6 +468,10 @@ class MainActivity : AppCompatActivity() {
         private var handshakeComplete = false
         private var displayReady = false
 
+        // Modified UDPReceiver with frame skipping logic
+        private var lastFrameDisplayTime = 0L
+        private val minFrameInterval = 33L // ~30 FPS max display rate
+
         fun stop() {
             running = false
             socket?.close()
@@ -245,26 +479,26 @@ class MainActivity : AppCompatActivity() {
 
         override fun run() {
             try {
-                // Create socket
                 socket = DatagramSocket()
-                socket?.soTimeout = 10000 // 10 seconds timeout
+                socket?.soTimeout = 10000
 
                 val serverAddress = InetAddress.getByName(serverIP)
                 updateStatus("Socket created. Starting handshake...")
 
-                // Handshake Phase
                 if (!performHandshake(serverAddress)) {
                     updateStatus("Handshake failed")
                     return
                 }
 
-                // Start streaming
                 if (!requestStreaming(serverAddress)) {
                     updateStatus("Failed to start streaming")
                     return
                 }
 
-                // Main receiving loop
+                // Streaming started successfully
+                isStreaming = true
+                updateFullscreenButton()
+
                 val buffer = ByteArray(2048)
                 while (running) {
                     val packet = DatagramPacket(buffer, buffer.size)
@@ -280,36 +514,33 @@ class MainActivity : AppCompatActivity() {
                 updateStatus("Error: ${e.localizedMessage}")
             } finally {
                 socket?.close()
+                isStreaming = false
+                updateFullscreenButton()
                 updateStatus("Socket closed")
             }
         }
 
         private fun performHandshake(serverAddress: InetAddress): Boolean {
             try {
-                // Step 1: Send HELLO
                 updateStatus("Sending HELLO...")
                 if (!sendMessage(serverAddress, "HELLO")) return false
 
-                // Wait for HELLO_ACK
                 if (!waitForMessage("HELLO_ACK", 5000)) {
                     updateStatus("Did not receive HELLO_ACK")
                     return false
                 }
                 updateStatus("Received HELLO_ACK")
 
-                // Step 2: Send resolution information
                 val resolutionMsg = "RESOLUTION:$screenWidth:$screenHeight:$refreshRate"
                 updateStatus("Sending resolution: ${screenWidth}x${screenHeight}@${refreshRate}Hz")
                 if (!sendMessage(serverAddress, resolutionMsg)) return false
 
-                // Wait for RESOLUTION_ACK or RESOLUTION_CHANGED
                 val resolutionResponse = waitForResolutionResponse(15000)
                 if (resolutionResponse == null) {
                     updateStatus("No resolution response from server")
                     return false
                 }
 
-                // Handle resolution response
                 if (resolutionResponse == "RESOLUTION_ACK") {
                     updateStatus("Resolution accepted by server")
                 } else if (resolutionResponse.startsWith("RESOLUTION_CHANGED:")) {
@@ -319,14 +550,12 @@ class MainActivity : AppCompatActivity() {
                     return false
                 }
 
-                // Wait for DISPLAY_READY message
                 val displayReadyMsg = waitForDisplayReady(15000)
                 if (displayReadyMsg == null) {
                     updateStatus("Display setup timeout")
                     return false
                 }
 
-                // Parse display ready message: "DISPLAY_READY:output:widthxheight:x:y"
                 updateStatus("Display ready: $displayReadyMsg")
                 handshakeComplete = true
                 displayReady = true
@@ -340,12 +569,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         private fun handleResolutionChanged(message: String) {
-            // Parse "RESOLUTION_CHANGED:1920x1080:60.0"
             try {
                 val parts = message.split(":")
                 if (parts.size >= 3 && parts[0] == "RESOLUTION_CHANGED") {
-                    val resolutionPart = parts[1] // "1920x1080"
-                    val refreshRatePart = parts[2] // "60.0"
+                    val resolutionPart = parts[1]
+                    val refreshRatePart = parts[2]
 
                     val resolutionParts = resolutionPart.split("x")
                     if (resolutionParts.size == 2) {
@@ -356,7 +584,6 @@ class MainActivity : AppCompatActivity() {
                         updateServerResolution(width, height, refreshRate)
                         updateStatus("Server using fallback resolution: ${width}x${height}@${refreshRate}Hz")
 
-                        // Show a toast to notify user
                         mainHandler.post {
                             Toast.makeText(
                                 this@MainActivity,
@@ -391,7 +618,6 @@ class MainActivity : AppCompatActivity() {
                         updateStatus("Server error: $receivedMessage")
                         return null
                     }
-                    // Continue waiting for the right message
                 }
                 return null
             } catch (e: SocketTimeoutException) {
@@ -407,7 +633,6 @@ class MainActivity : AppCompatActivity() {
                 updateStatus("Requesting stream start...")
                 if (!sendMessage(serverAddress, "START_STREAM")) return false
 
-                // Wait for STREAM_STARTED
                 if (!waitForMessage("STREAM_STARTED", 5000)) {
                     updateStatus("Did not receive STREAM_STARTED")
                     return false
@@ -494,15 +719,13 @@ class MainActivity : AppCompatActivity() {
             if (!handshakeComplete || !displayReady) return
 
             try {
-                // Check if this is a frame info packet (starts with "INFO:")
                 val dataStr = String(data, 0, length)
                 if (dataStr.startsWith("INFO:")) {
                     handleFrameInfo(dataStr)
                     return
                 }
 
-                // Check if this is a frame data packet (has PacketHeader)
-                if (length >= 16) { // Minimum size for PacketHeader (4 * 4 bytes)
+                if (length >= 16) {
                     handleFramePacket(data, length)
                 }
             } catch (e: Exception) {
@@ -511,16 +734,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         private fun handleFrameInfo(infoPacket: String) {
-            // Parse "INFO:width:height:format" or "INFO:width:height" (fallback)
             val parts = infoPacket.split(":")
             if (parts.size >= 3 && parts[0] == "INFO") {
                 val width = parts[1].toIntOrNull()
                 val height = parts[2].toIntOrNull()
-                val format = if (parts.size >= 4) parts[3] else "WEBP" // Default to WebP
 
                 if (width != null && height != null) {
-                    frameInfo = FrameInfo(width, height, format)
-                    updateStatus("Frame info received: ${width}x${height} ($format format)")
+                    frameInfo = FrameInfo(width, height)
+                    updateStatus("Frame info received: ${width}x${height} (WebP)")
                 } else {
                     updateStatus("Invalid frame info format")
                 }
@@ -529,9 +750,8 @@ class MainActivity : AppCompatActivity() {
 
         private fun handleFramePacket(data: ByteArray, length: Int) {
             try {
-                // Parse PacketHeader (assuming network byte order - big-endian)
                 val buffer = ByteBuffer.wrap(data)
-                buffer.order(ByteOrder.BIG_ENDIAN) // Server uses network byte order
+                buffer.order(ByteOrder.BIG_ENDIAN)
 
                 val header = PacketHeader(
                     frameId = buffer.int,
@@ -540,15 +760,12 @@ class MainActivity : AppCompatActivity() {
                     dataSize = buffer.int
                 )
 
-                // Validate header
                 if (header.dataSize < 0 || header.dataSize > length - 16) {
                     updateStatus("Invalid packet header")
                     return
                 }
 
-                // Handle new frame
                 if (header.frameId != currentFrameId) {
-                    // New frame started
                     if (currentFrameId >= 0 && packetsReceived > 0) {
                         updateStatus("Frame ${currentFrameId}: ${packetsReceived}/${expectedPackets} packets")
                     }
@@ -560,18 +777,15 @@ class MainActivity : AppCompatActivity() {
                     frameStartTime = System.currentTimeMillis()
                 }
 
-                // Store packet data
                 val packetData = ByteArray(header.dataSize)
                 buffer.get(packetData, 0, header.dataSize)
                 framePackets[header.packetId] = packetData
                 packetsReceived++
 
-                // Check if frame is complete
                 if (packetsReceived == expectedPackets) {
                     val frameTime = System.currentTimeMillis() - frameStartTime
                     reconstructAndDisplayFrame(frameTime)
                 } else {
-                    // Periodic update for large frames
                     if (packetsReceived % 50 == 0) {
                         updateStatus("Frame ${currentFrameId}: ${packetsReceived}/${expectedPackets}")
                     }
@@ -585,11 +799,17 @@ class MainActivity : AppCompatActivity() {
             val info = frameInfo ?: return
 
             try {
-                // Calculate total frame size
+                val now = System.currentTimeMillis()
+
+                // Frame rate limiting on client side
+                if (now - lastFrameDisplayTime < minFrameInterval) {
+                    // Skip this frame - displaying too fast
+                    return
+                }
+
                 val totalSize = framePackets.values.sumOf { it.size }
                 val frameData = ByteArray(totalSize)
 
-                // Reconstruct frame by concatenating packets in order
                 var offset = 0
                 for (packetId in 0 until expectedPackets) {
                     val packetData = framePackets[packetId]
@@ -602,85 +822,38 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-                // Decode frame based on format
-                val bitmap = when (info.format.uppercase()) {
-                    "WEBP" -> decodeWebPBitmap(frameData)
-                    "RGB" -> createBitmapFromRGB(frameData, info.width, info.height) // Fallback for old format
-                    else -> {
-                        updateStatus("Unsupported frame format: ${info.format}")
-                        return
-                    }
-                }
+                framesReceived++
+                lastFrameDisplayTime = now
 
-                if (bitmap != null) {
-                    framesReceived++
+                // Send to optimized display function
+                displayFrame(frameData, currentFrameId, frameTime, totalSize)
 
-                    // Calculate original RGB size for compression info
-                    val originalSize = info.width * info.height * 3
-                    displayFrame(bitmap, currentFrameId, frameTime, info.format, originalSize, totalSize)
-
-                    // Update status every 10 frames
-                    if (framesReceived % 10 == 0) {
-                        updateStatus("Received $framesReceived ${info.format} frames")
-                    }
-                } else {
-                    updateStatus("Failed to decode ${info.format} frame $currentFrameId")
+                if (framesReceived % 30 == 0) {
+                    updateStatus("Received $framesReceived WebP frames")
                 }
 
             } catch (e: Exception) {
                 updateStatus("Frame reconstruction error: ${e.localizedMessage}")
             }
         }
-
-        // Decode WebP data to Bitmap
-        private fun decodeWebPBitmap(webpData: ByteArray): Bitmap? {
-            return try {
-                // Use Android's built-in WebP decoder
-                BitmapFactory.decodeByteArray(webpData, 0, webpData.size)
-            } catch (e: Exception) {
-                updateStatus("WebP decode error: ${e.localizedMessage}")
-                null
-            }
-        }
-
-        // Legacy RGB decoder (keep for backward compatibility)
-        private fun createBitmapFromRGB(rgbData: ByteArray, width: Int, height: Int): Bitmap? {
-            try {
-                // Verify data size
-                val expectedSize = width * height * 3 // 3 bytes per pixel (RGB)
-                if (rgbData.size != expectedSize) {
-                    updateStatus("RGB data size mismatch: got ${rgbData.size}, expected $expectedSize")
-                    return null
-                }
-
-                // Create bitmap
-                val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-
-                // Convert RGB to ARGB pixels
-                val pixels = IntArray(width * height)
-                for (i in pixels.indices) {
-                    val rgbIndex = i * 3
-                    val r = rgbData[rgbIndex].toInt() and 0xFF
-                    val g = rgbData[rgbIndex + 1].toInt() and 0xFF
-                    val b = rgbData[rgbIndex + 2].toInt() and 0xFF
-                    pixels[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b // ARGB format
-                }
-
-                // Set pixels to bitmap
-                bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
-
-                return bitmap
-
-            } catch (e: Exception) {
-                updateStatus("Bitmap creation error: ${e.localizedMessage}")
-                return null
-            }
-        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        previousBitmap?.recycle()
+        previousBitmap = null
         disconnectFromServer()
+
+        // Shutdown decoding executor
+        decodingExecutor?.shutdownNow()
         executorService?.shutdownNow()
+    }
+
+    override fun onBackPressed() {
+        if (isFullscreen) {
+            exitFullscreen()
+        } else {
+            super.onBackPressed()
+        }
     }
 }

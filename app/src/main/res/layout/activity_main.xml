@@ -3,143 +3,102 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="@color/black">
+    android:padding="16dp">
 
-    <!-- Controls Layout - This will be hidden in fullscreen mode -->
+    <!-- Connection Controls -->
     <LinearLayout
-        android:id="@+id/controls_layout"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="16dp"
-        android:background="@color/design_default_color_background">
+        android:orientation="horizontal"
+        android:layout_marginBottom="8dp">
 
-        <!-- Server Connection Section -->
-        <TextView
-            android:layout_width="wrap_content"
+        <EditText
+            android:id="@+id/et_server_ip"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="Server Connection"
-            android:textStyle="bold"
-            android:textSize="16sp"
-            android:layout_marginBottom="8dp" />
+            android:layout_weight="1"
+            android:hint="Server IP"
+            android:inputType="text"
+            android:text="192.168.1.100" />
 
-        <LinearLayout
-            android:layout_width="match_parent"
+        <EditText
+            android:id="@+id/et_port"
+            android:layout_width="80dp"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginBottom="8dp">
-
-            <EditText
-                android:id="@+id/et_server_ip"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="2"
-                android:hint="Server IP"
-                android:text="192.168.1.100"
-                android:inputType="textUri"
-                android:layout_marginEnd="8dp" />
-
-            <EditText
-                android:id="@+id/et_port"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:hint="Port"
-                android:text="8080"
-                android:inputType="number" />
-
-        </LinearLayout>
-
-        <!-- Connection Buttons -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginBottom="16dp">
-
-            <Button
-                android:id="@+id/btn_connect"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Connect"
-                android:layout_marginEnd="8dp" />
-
-            <Button
-                android:id="@+id/btn_disconnect"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Disconnect"
-                android:enabled="false"
-                android:layout_marginEnd="8dp" />
-
-            <Button
-                android:id="@+id/btn_fullscreen"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Fullscreen"
-                android:enabled="false" />
-
-        </LinearLayout>
-
-        <!-- Status Information -->
-        <TextView
-            android:id="@+id/tv_status"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Status: Ready"
-            android:textColor="@color/design_default_color_primary"
-            android:layout_marginBottom="4dp" />
-
-        <TextView
-            android:id="@+id/tv_resolution"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Resolution: Not available"
-            android:textSize="12sp"
-            android:layout_marginBottom="4dp" />
-
-        <TextView
-            android:id="@+id/tv_frame_info"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="No frame data"
-            android:textSize="12sp"
-            android:layout_marginBottom="8dp" />
+            android:hint="Port"
+            android:inputType="number"
+            android:text="8888"
+            android:layout_marginStart="8dp" />
 
     </LinearLayout>
 
-    <!-- Frame Display Area -->
-    <FrameLayout
+    <!-- Action Buttons -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginBottom="8dp">
+
+        <Button
+            android:id="@+id/btn_connect"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Connect" />
+
+        <Button
+            android:id="@+id/btn_disconnect"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Disconnect"
+            android:enabled="false"
+            android:layout_marginStart="8dp" />
+
+        <Button
+            android:id="@+id/btn_fullscreen"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Fullscreen"
+            android:enabled="false"
+            android:layout_marginStart="8dp" />
+
+    </LinearLayout>
+
+    <!-- Status Information -->
+    <TextView
+        android:id="@+id/tv_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Status: Ready"
+        android:textSize="12sp"
+        android:layout_marginBottom="4dp" />
+
+    <TextView
+        android:id="@+id/tv_resolution"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Resolution: Not set"
+        android:textSize="12sp"
+        android:layout_marginBottom="4dp" />
+
+    <TextView
+        android:id="@+id/tv_frame_info"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Frame: No data"
+        android:textSize="12sp"
+        android:layout_marginBottom="8dp" />
+
+    <!-- Video Display -->
+    <ImageView
+        android:id="@+id/iv_frame"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:background="@color/black">
-
-        <ImageView
-            android:id="@+id/iv_frame"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:scaleType="fitCenter"
-            android:adjustViewBounds="true"
-            android:background="@color/black"
-            android:contentDescription="Video Stream" />
-
-        <!-- Overlay for fullscreen instruction -->
-        <TextView
-            android:id="@+id/tv_fullscreen_hint"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center"
-            android:text="Tap to enter fullscreen"
-            android:textColor="@color/white"
-            android:textSize="18sp"
-            android:background="#80000000"
-            android:padding="16dp"
-            android:visibility="gone" />
-
-    </FrameLayout>
+        android:scaleType="fitCenter"
+        android:background="#000000"
+        android:contentDescription="Stream display" />
 
 </LinearLayout>

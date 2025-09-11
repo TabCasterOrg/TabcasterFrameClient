@@ -5,10 +5,14 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Rect
+import android.net.InetAddresses
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.Editable
+import android.text.TextWatcher
 import android.util.DisplayMetrics
+import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
@@ -77,6 +81,24 @@ class MainActivity : AppCompatActivity() {
         updateStatus("Ready")
         updateFrameInfo("No frame data")
         updateResolutionInfo()
+
+        // This is here to make the connection button update when a button is or isnt available. More responsive to the user.
+        val serverTextWatcher : TextWatcher = object : TextWatcher {
+            override fun beforeTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) { return }
+
+            override fun onTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {
+                //Toast.makeText(this, p0, Toast.LENGTH_SHORT).show()
+                evaluateInput(p0)
+            }
+
+            override fun afterTextChanged(p0: Editable?) { return }
+        }
+        etServerIP.addTextChangedListener(serverTextWatcher)
+        // Initially hide disconnect button
+        // TODO: Turn The Connect Button Into The Disconnect Button When Connected
+        btnDisconnect.visibility = View.GONE
+        // TODO: Figure Out Why The Center Text Does Not Update
+        //binding.centerText.text = introText // Change the text
     }
 
     private fun getScreenResolution() {
@@ -106,6 +128,19 @@ class MainActivity : AppCompatActivity() {
         serverWidth = screenWidth
         serverHeight = screenHeight
         serverRefreshRate = refreshRate
+    }
+
+    // This is designed to grey out the connect button if the IP address is not valid. The user can still press the button to explain IP addresses.
+    private fun evaluateInput(input : CharSequence?){
+        // If an IP Address is valid, show 'Connect'
+        if (input != null && InetAddresses.isNumericAddress(input.toString())){
+            // TODO: "Update the background colour and icon when a valid or nonvalid IP is entered"
+            btnConnect.setText("Connect") // Change the text to connect when we have an IP address that we an connect to.
+        }
+        // If it isn't, show 'Help'
+        else {
+            btnConnect.setText("Help") // If we do not have an IP address, show the 'help'text.
+        }
     }
 
     private fun connectToServer() {

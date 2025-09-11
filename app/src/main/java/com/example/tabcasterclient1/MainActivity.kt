@@ -2,6 +2,7 @@ package com.example.tabcasterclient1
 
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Rect
@@ -192,10 +193,16 @@ class MainActivity : AppCompatActivity() {
         updateResolutionInfo()
     }
 
-    private fun displayFrame(bitmap: Bitmap, frameId: Int, frameTime: Long) {
+    private fun displayFrame(bitmap: Bitmap, frameId: Int, frameTime: Long, format: String, originalSize: Int, compressedSize: Int) {
         mainHandler.post {
             ivFrame.setImageBitmap(bitmap)
-            updateFrameInfo("Frame $frameId (${bitmap.width}x${bitmap.height}) - ${frameTime}ms")
+            val compressionInfo = if (compressedSize > 0) {
+                val ratio = originalSize.toFloat() / compressedSize
+                " (${format}, ${compressedSize} bytes, ${String.format("%.1f", ratio)}x compression)"
+            } else {
+                " (${format})"
+            }
+            updateFrameInfo("Frame $frameId (${bitmap.width}x${bitmap.height}) - ${frameTime}ms$compressionInfo")
         }
     }
 
@@ -209,7 +216,8 @@ class MainActivity : AppCompatActivity() {
 
     data class FrameInfo(
         val width: Int,
-        val height: Int
+        val height: Int,
+        val format: String = "WEBP" // Default to WebP now
     )
 
     private inner class UDPReceiver(
@@ -503,14 +511,16 @@ class MainActivity : AppCompatActivity() {
         }
 
         private fun handleFrameInfo(infoPacket: String) {
-            // Parse "INFO:width:height"
+            // Parse "INFO:width:height:format" or "INFO:width:height" (fallback)
             val parts = infoPacket.split(":")
-            if (parts.size == 3 && parts[0] == "INFO") {
+            if (parts.size >= 3 && parts[0] == "INFO") {
                 val width = parts[1].toIntOrNull()
                 val height = parts[2].toIntOrNull()
+                val format = if (parts.size >= 4) parts[3] else "WEBP" // Default to WebP
+
                 if (width != null && height != null) {
-                    frameInfo = FrameInfo(width, height)
-                    updateStatus("Frame info received: ${width}x${height}")
+                    frameInfo = FrameInfo(width, height, format)
+                    updateStatus("Frame info received: ${width}x${height} ($format format)")
                 } else {
                     updateStatus("Invalid frame info format")
                 }
@@ -577,14 +587,14 @@ class MainActivity : AppCompatActivity() {
             try {
                 // Calculate total frame size
                 val totalSize = framePackets.values.sumOf { it.size }
-                val rgbData = ByteArray(totalSize)
+                val frameData = ByteArray(totalSize)
 
                 // Reconstruct frame by concatenating packets in order
                 var offset = 0
                 for (packetId in 0 until expectedPackets) {
                     val packetData = framePackets[packetId]
                     if (packetData != null) {
-                        System.arraycopy(packetData, 0, rgbData, offset, packetData.size)
+                        System.arraycopy(packetData, 0, frameData, offset, packetData.size)
                         offset += packetData.size
                     } else {
                         updateStatus("Missing packet $packetId in frame $currentFrameId")
@@ -592,18 +602,29 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-                // Convert RGB data to Bitmap
-                val bitmap = createBitmapFromRGB(rgbData, info.width, info.height)
+                // Decode frame based on format
+                val bitmap = when (info.format.uppercase()) {
+                    "WEBP" -> decodeWebPBitmap(frameData)
+                    "RGB" -> createBitmapFromRGB(frameData, info.width, info.height) // Fallback for old format
+                    else -> {
+                        updateStatus("Unsupported frame format: ${info.format}")
+                        return
+                    }
+                }
+
                 if (bitmap != null) {
                     framesReceived++
-                    displayFrame(bitmap, currentFrameId, frameTime)
+
+                    // Calculate original RGB size for compression info
+                    val originalSize = info.width * info.height * 3
+                    displayFrame(bitmap, currentFrameId, frameTime, info.format, originalSize, totalSize)
 
                     // Update status every 10 frames
                     if (framesReceived % 10 == 0) {
-                        updateStatus("Received $framesReceived frames")
+                        updateStatus("Received $framesReceived ${info.format} frames")
                     }
                 } else {
-                    updateStatus("Failed to create bitmap for frame $currentFrameId")
+                    updateStatus("Failed to decode ${info.format} frame $currentFrameId")
                 }
 
             } catch (e: Exception) {
@@ -611,6 +632,18 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Decode WebP data to Bitmap
+        private fun decodeWebPBitmap(webpData: ByteArray): Bitmap? {
+            return try {
+                // Use Android's built-in WebP decoder
+                BitmapFactory.decodeByteArray(webpData, 0, webpData.size)
+            } catch (e: Exception) {
+                updateStatus("WebP decode error: ${e.localizedMessage}")
+                null
+            }
+        }
+
+        // Legacy RGB decoder (keep for backward compatibility)
         private fun createBitmapFromRGB(rgbData: ByteArray, width: Int, height: Int): Bitmap? {
             try {
                 // Verify data size

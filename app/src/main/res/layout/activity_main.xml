@@ -112,7 +112,7 @@
                     android:id="@+id/serverInput"
                     android:layout_width="match_parent"
                     android:layout_height="match_parent"
-                    android:hint="IP:Port (optional)"
+                    android:hint="IP Address"
                     android:imeOptions="actionDone"
                     android:inputType="textNoSuggestions"
                     />

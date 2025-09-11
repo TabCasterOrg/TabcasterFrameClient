@@ -95,11 +95,22 @@ class MainActivity : AppCompatActivity() {
     private var lastFrameInfoUpdate = 0L
     private var lastStatusUpdate = 0L
 
+    companion object {
+        private const val DEFAULT_IP = "10.1.10.105"
+        private const val DEFAULT_PORT = 23532
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+
+
         initializeViews()
+        // Auto-fill defaults
+        etServerIP.setText(DEFAULT_IP)
+        etPort.setText(DEFAULT_PORT.toString())
+
         setupClickListeners()
 
         executorService = Executors.newSingleThreadExecutor()
@@ -163,13 +174,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun connectToServer() {
-        val serverIP = etServerIP.text.toString().trim()
-        val portStr = etPort.text.toString().trim()
+        val defaultIP = "10.1.10.105"
+        val defaultPort = 23532
 
-        if (serverIP.isEmpty() || portStr.isEmpty()) {
-            Toast.makeText(this, "Please enter server IP and port", Toast.LENGTH_SHORT).show()
-            return
-        }
+        val serverIP = etServerIP.text.toString().trim().ifEmpty { defaultIP }
+        val portStr = etPort.text.toString().trim().ifEmpty { defaultPort.toString() }
 
         val port = try {
             portStr.toInt()
@@ -177,7 +186,6 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Invalid port number", Toast.LENGTH_SHORT).show()
             return
         }
-
         udpReceiver = UDPReceiver(serverIP, port)
         executorService?.submit(udpReceiver)
 

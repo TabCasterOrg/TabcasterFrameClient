@@ -26,9 +26,8 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 class MainActivity : AppCompatActivity() {
-
+    private var portNumber = 23532;
     private lateinit var etServerIP: EditText
-    private lateinit var etPort: EditText
     private lateinit var btnConnect: Button
     private lateinit var btnDisconnect: Button
     private lateinit var tvStatus: TextView
@@ -55,7 +54,6 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         etServerIP = findViewById(R.id.serverInput)
-        etPort = findViewById(R.id.et_port)
         btnConnect = findViewById(R.id.connectButton)
         btnDisconnect = findViewById(R.id.disconnectButton)
         tvStatus = findViewById(R.id.tv_status)
@@ -112,29 +110,20 @@ class MainActivity : AppCompatActivity() {
 
     private fun connectToServer() {
         val serverIP = etServerIP.text.toString().trim()
-        val portStr = etPort.text.toString().trim()
 
-        if (serverIP.isEmpty() || portStr.isEmpty()) {
-            Toast.makeText(this, "Please enter server IP and port", Toast.LENGTH_SHORT).show()
+        if (serverIP.isEmpty()) {
+            Toast.makeText(this, "Please enter server IP", Toast.LENGTH_SHORT).show()
             return
         }
 
-        val port = try {
-            portStr.toInt()
-        } catch (e: NumberFormatException) {
-            Toast.makeText(this, "Invalid port number", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        udpReceiver = UDPReceiver(serverIP, port)
+        udpReceiver = UDPReceiver(serverIP, portNumber)
         executorService?.submit(udpReceiver)
 
         btnConnect.isEnabled = false
         btnDisconnect.isEnabled = true
         etServerIP.isEnabled = false
-        etPort.isEnabled = false
 
-        updateStatus("Connecting to $serverIP:$port")
+        updateStatus("Connecting to $serverIP")
     }
 
     private fun disconnectFromServer() {
@@ -144,7 +133,6 @@ class MainActivity : AppCompatActivity() {
         btnConnect.isEnabled = true
         btnDisconnect.isEnabled = false
         etServerIP.isEnabled = true
-        etPort.isEnabled = true
 
         updateStatus("Disconnected")
         updateFrameInfo("No frame data")

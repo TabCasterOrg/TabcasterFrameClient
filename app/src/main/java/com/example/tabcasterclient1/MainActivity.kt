@@ -54,10 +54,10 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        etServerIP = findViewById(R.id.et_server_ip)
+        etServerIP = findViewById(R.id.serverInput)
         etPort = findViewById(R.id.et_port)
-        btnConnect = findViewById(R.id.btn_connect)
-        btnDisconnect = findViewById(R.id.btn_disconnect)
+        btnConnect = findViewById(R.id.connectButton)
+        btnDisconnect = findViewById(R.id.disconnectButton)
         tvStatus = findViewById(R.id.tv_status)
         ivFrame = findViewById(R.id.iv_frame)
         tvFrameInfo = findViewById(R.id.tv_frame_info)

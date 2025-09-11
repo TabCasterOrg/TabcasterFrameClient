@@ -2,18 +2,28 @@ package com.example.tabcasterclient1
 
 import android.content.res.Configuration
 import android.graphics.Bitmap
+
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Rect
+import android.net.InetAddresses
 import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.Editable
+import android.text.TextWatcher
 import android.util.DisplayMetrics
+import android.util.Log
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -28,16 +38,18 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 class MainActivity : AppCompatActivity() {
-
+    private var portNumber = 23532;
     private lateinit var etServerIP: EditText
-    private lateinit var etPort: EditText
     private lateinit var btnConnect: Button
     private lateinit var btnDisconnect: Button
-    private lateinit var btnFullscreen: Button
+
+    private lateinit var btnHide: Button
+
     private lateinit var tvStatus: TextView
     private lateinit var ivFrame: ImageView
     private lateinit var tvFrameInfo: TextView
     private lateinit var tvResolution: TextView
+    private lateinit var bottomBar: LinearLayout
 
     private var udpReceiver: UDPReceiver? = null
     private var executorService: ExecutorService? = null
@@ -100,9 +112,15 @@ class MainActivity : AppCompatActivity() {
         private const val DEFAULT_PORT = 23532
     }
 
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+
+        etServerIP = findViewById(R.id.serverInput)
+        btnConnect = findViewById(R.id.connectButton)
+        btnDisconnect = findViewById(R.id.disconnectButton)
+        btnHide = findViewById(R.id.hideButton)
 
 
 
@@ -132,10 +150,16 @@ class MainActivity : AppCompatActivity() {
         btnDisconnect = findViewById(R.id.btn_disconnect)
         btnFullscreen = findViewById(R.id.btn_fullscreen)
         tvStatus = findViewById(R.id.tv_status)
-        ivFrame = findViewById(R.id.iv_frame)
+        ivFrame = findViewById(R.id.iv_frame) // This is the variable for the display itself
         tvFrameInfo = findViewById(R.id.tv_frame_info)
         tvResolution = findViewById(R.id.tv_resolution)
+
+        bottomBar = findViewById(R.id.controlsLayout)
+
+        executorService = Executors.newSingleThreadExecutor()
+
     }
+
 
     private fun setupClickListeners() {
         btnConnect.setOnClickListener { connectToServer() }
@@ -148,6 +172,37 @@ class MainActivity : AppCompatActivity() {
                 toggleFullscreen()
             }
         }
+
+        btnHide.setOnClickListener {
+            hideBar()
+        }
+
+        ivFrame.setOnClickListener {
+            showBar()
+        }
+
+        updateStatus("Ready")
+        updateFrameInfo("No frame data")
+        updateResolutionInfo()
+
+        // This is here to make the connection button update when a button is or isnt available. More responsive to the user.
+        val serverTextWatcher : TextWatcher = object : TextWatcher {
+            override fun beforeTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) { return }
+
+            override fun onTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {
+                //Toast.makeText(this, p0, Toast.LENGTH_SHORT).show()
+                evaluateInput(p0)
+            }
+
+            override fun afterTextChanged(p0: Editable?) { return }
+        }
+        etServerIP.addTextChangedListener(serverTextWatcher)
+        // Initially hide disconnect button
+        // TODO: Turn The Connect Button Into The Disconnect Button When Connected
+        btnDisconnect.visibility = View.GONE
+        // TODO: Figure Out Why The Center Text Does Not Update
+        //binding.centerText.text = introText // Change the text
+
     }
 
     private fun getScreenResolution() {
@@ -168,34 +223,62 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Initially, server resolution matches client
         serverWidth = screenWidth
         serverHeight = screenHeight
         serverRefreshRate = refreshRate
     }
 
+    // This is designed to grey out the connect button if the IP address is not valid. The user can still press the button to explain IP addresses.
+    private fun evaluateInput(input : CharSequence?){
+        // If an IP Address is valid, show 'Connect'
+        if (input != null && InetAddresses.isNumericAddress(input.toString())){
+            // TODO: "Update the background colour and icon when a valid or nonvalid IP is entered"
+            btnConnect.setText("Connect") // Change the text to connect when we have an IP address that we an connect to.
+        }
+        // If it isn't, show 'Help'
+        else {
+            btnConnect.setText("Help") // If we do not have an IP address, show the 'help'text.
+        }
+    }
+
     private fun connectToServer() {
-        val defaultIP = "10.1.10.105"
-        val defaultPort = 23532
+        val serverIP = etServerIP.text.toString().trim()
 
-        val serverIP = etServerIP.text.toString().trim().ifEmpty { defaultIP }
-        val portStr = etPort.text.toString().trim().ifEmpty { defaultPort.toString() }
-
-        val port = try {
-            portStr.toInt()
-        } catch (e: NumberFormatException) {
-            Toast.makeText(this, "Invalid port number", Toast.LENGTH_SHORT).show()
+        if (serverIP.isEmpty()) {
+            Toast.makeText(this, "Please enter server IP", Toast.LENGTH_SHORT).show()
             return
         }
-        udpReceiver = UDPReceiver(serverIP, port)
-        executorService?.submit(udpReceiver)
+        else if (InetAddresses.isNumericAddress(serverIP)){
 
-        btnConnect.isEnabled = false
-        btnDisconnect.isEnabled = true
-        etServerIP.isEnabled = false
-        etPort.isEnabled = false
+            Toast.makeText(this, "Connecting to: $serverIP", Toast.LENGTH_SHORT).show()
+            btnDisconnect.visibility = View.VISIBLE
 
-        updateStatus("Connecting to $serverIP:$port")
+            // Start Sending UDP Packets!
+            udpReceiver = UDPReceiver(serverIP, portNumber)
+            executorService?.submit(udpReceiver)
+
+            btnConnect.isEnabled = false
+            btnDisconnect.isEnabled = true
+            etServerIP.isEnabled = false
+
+            updateStatus("Connecting to $serverIP")
+        } else {
+            // This is a dialog box, to explain how to input the IP address.
+            val builder: AlertDialog.Builder =
+                AlertDialog.Builder(this) // Use 'this as the context.
+            builder.setTitle("Invalid IP Address")
+            builder.setMessage("$serverIP is not a valid IP address.\nIP Addresses usually follow the format of XXX.XXX.XX.XXX:XXXX\n\nTo retreive your IP address on Linux systems with NetworkManager installed, use `nmcli` in the Terminal to find your IP address.\nWhen a valid IP address is entered, the help button will become the connect button, and you can attempt to connect to TabCaster.")
+            val dialog: AlertDialog = builder.create()
+            dialog.show()
+        }
+
+        serverWidth = screenWidth
+        serverHeight = screenHeight
+        serverRefreshRate = refreshRate
     }
+
+
 
     private fun disconnectFromServer() {
         udpReceiver?.stop()
@@ -221,7 +304,6 @@ class MainActivity : AppCompatActivity() {
         btnConnect.isEnabled = true
         btnDisconnect.isEnabled = false
         etServerIP.isEnabled = true
-        etPort.isEnabled = true
 
         updateStatus("Disconnected")
         updateFrameInfo("No frame data")
@@ -233,10 +315,19 @@ class MainActivity : AppCompatActivity() {
         serverRefreshRate = refreshRate
         updateResolutionInfo()
 
+        // Reset server resolution to match client
+        serverWidth = screenWidth
+        serverHeight = screenHeight
+        serverRefreshRate = refreshRate
+        updateResolutionInfo()
+
         // Clear the image view
         mainHandler.post {
             ivFrame.setImageBitmap(null)
         }
+
+        // Re-disable the Disconnect button
+        btnDisconnect.visibility = View.GONE
 
         // Exit fullscreen if active
         if (isFullscreen) {
@@ -359,6 +450,10 @@ class MainActivity : AppCompatActivity() {
         updateResolutionInfo()
     }
 
+    private fun displayFrame(bitmap: Bitmap, frameId: Int, frameTime: Long) {
+        mainHandler.post {
+            ivFrame.setImageBitmap(bitmap)
+            updateFrameInfo("Frame $frameId (${bitmap.width}x${bitmap.height}) - ${frameTime}ms")
     // FPS calculation
     private fun updateFPSCalculation() {
         val now = System.currentTimeMillis()
@@ -442,6 +537,21 @@ class MainActivity : AppCompatActivity() {
             } finally {
                 pendingDecodes--
             }
+        }
+    }
+
+    // Show And Hide Bar
+    private fun hideBar(){
+        if (bottomBar.visibility == View.VISIBLE){
+            bottomBar.visibility = View.GONE
+            Toast.makeText(this, "Hiding controls bar. Tap the screen to show again", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun showBar(){
+        if (bottomBar.visibility == View.GONE){
+            bottomBar.visibility = View.VISIBLE
+            Toast.makeText(this, "Showing controls bar", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -543,12 +653,14 @@ class MainActivity : AppCompatActivity() {
                 updateStatus("Sending resolution: ${screenWidth}x${screenHeight}@${refreshRate}Hz")
                 if (!sendMessage(serverAddress, resolutionMsg)) return false
 
+                // Wait for RESOLUTION_ACK or RESOLUTION_CHANGED
                 val resolutionResponse = waitForResolutionResponse(15000)
                 if (resolutionResponse == null) {
                     updateStatus("No resolution response from server")
                     return false
                 }
 
+                // Handle resolution response
                 if (resolutionResponse == "RESOLUTION_ACK") {
                     updateStatus("Resolution accepted by server")
                 } else if (resolutionResponse.startsWith("RESOLUTION_CHANGED:")) {
@@ -577,11 +689,13 @@ class MainActivity : AppCompatActivity() {
         }
 
         private fun handleResolutionChanged(message: String) {
+            // Parse "RESOLUTION_CHANGED:1920x1080:60.0"
             try {
                 val parts = message.split(":")
                 if (parts.size >= 3 && parts[0] == "RESOLUTION_CHANGED") {
-                    val resolutionPart = parts[1]
-                    val refreshRatePart = parts[2]
+                    val resolutionPart = parts[1] // "1920x1080"
+                    val refreshRatePart = parts[2] // "60.0"
+
 
                     val resolutionParts = resolutionPart.split("x")
                     if (resolutionParts.size == 2) {
@@ -591,6 +705,8 @@ class MainActivity : AppCompatActivity() {
 
                         updateServerResolution(width, height, refreshRate)
                         updateStatus("Server using fallback resolution: ${width}x${height}@${refreshRate}Hz")
+
+                        // Show a toast to notify user
 
                         mainHandler.post {
                             Toast.makeText(
@@ -626,6 +742,7 @@ class MainActivity : AppCompatActivity() {
                         updateStatus("Server error: $receivedMessage")
                         return null
                     }
+                    // Continue waiting for the right message
                 }
                 return null
             } catch (e: SocketTimeoutException) {

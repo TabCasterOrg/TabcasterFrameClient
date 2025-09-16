@@ -2,21 +2,14 @@ package com.example.tabcasterclient1
 
 import android.content.res.Configuration
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.Paint
-import android.graphics.Rect
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.DisplayMetrics
 import android.view.View
 import android.view.WindowManager
-import android.widget.Button
-import android.widget.EditText
-import android.widget.ImageView
-import android.widget.TextView
-import android.widget.Toast
-import android.widget.LinearLayout
+import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -25,10 +18,10 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.SocketTimeoutException
-import java.util.concurrent.Executors
-import java.util.concurrent.ExecutorService
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
 
@@ -61,6 +54,15 @@ class MainActivity : AppCompatActivity() {
     private var isFullscreen = false
     private var windowInsetsController: WindowInsetsControllerCompat? = null
 
+    // Persistent bitmap state
+    private var backingBitmap: Bitmap? = null
+    private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+
+    // UI throttling
+    @Volatile private var uiDirty = false
+    @Volatile private var uiTickerRunning = false
+    private var lastInfoUpdateMs = 0L
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -69,9 +71,7 @@ class MainActivity : AppCompatActivity() {
         setupWindowInsets()
         executorService = Executors.newSingleThreadExecutor()
 
-        // Get screen resolution
         getScreenResolution()
-
         setupClickListeners()
         updateStatus("Ready")
         updateFrameInfo("No frame data")
@@ -90,13 +90,15 @@ class MainActivity : AppCompatActivity() {
         tvResolution = findViewById(R.id.tv_resolution)
         controlsLayout = findViewById(R.id.controls_layout)
 
-        // Configure ImageView for better scaling
         ivFrame.scaleType = ImageView.ScaleType.MATRIX
         ivFrame.adjustViewBounds = true
 
-        // Set initial fullscreen button text
         btnFullscreen.text = "Fullscreen"
-        btnFullscreen.isEnabled = false // Enable only when streaming
+        btnFullscreen.isEnabled = false
+
+        // Defaults
+        etServerIP.setText("10.1.10.105")
+        etPort.setText("23532")
     }
 
     private fun setupWindowInsets() {
@@ -106,71 +108,38 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupClickListeners() {
-        btnConnect.setOnClickListener {
-            connectToServer()
-        }
-
-        btnDisconnect.setOnClickListener {
-            disconnectFromServer()
-        }
-
-        btnFullscreen.setOnClickListener {
-            toggleFullscreen()
-        }
-
-        // Double-tap ImageView to toggle fullscreen
-        ivFrame.setOnClickListener {
-            if (btnFullscreen.isEnabled) {
-                toggleFullscreen()
-            }
-        }
+        btnConnect.setOnClickListener { connectToServer() }
+        btnDisconnect.setOnClickListener { disconnectFromServer() }
+        btnFullscreen.setOnClickListener { toggleFullscreen() }
+        ivFrame.setOnClickListener { if (btnFullscreen.isEnabled) toggleFullscreen() }
     }
 
     private fun toggleFullscreen() {
-        if (isFullscreen) {
-            exitFullscreen()
-        } else {
-            enterFullscreen()
-        }
+        if (isFullscreen) exitFullscreen() else enterFullscreen()
     }
 
     private fun enterFullscreen() {
         isFullscreen = true
-
-        // Hide system bars
         windowInsetsController?.hide(WindowInsetsCompat.Type.systemBars())
-
-        // Hide controls
         controlsLayout.visibility = View.GONE
-
-        // Make ImageView fill the screen and center the image
         val layoutParams = ivFrame.layoutParams
         layoutParams.width = LinearLayout.LayoutParams.MATCH_PARENT
         layoutParams.height = LinearLayout.LayoutParams.MATCH_PARENT
         ivFrame.layoutParams = layoutParams
         ivFrame.scaleType = ImageView.ScaleType.FIT_CENTER
-
         btnFullscreen.text = "Exit Fullscreen"
-
         Toast.makeText(this, "Fullscreen mode - tap to exit", Toast.LENGTH_SHORT).show()
     }
 
     private fun exitFullscreen() {
         isFullscreen = false
-
-        // Show system bars
         windowInsetsController?.show(WindowInsetsCompat.Type.systemBars())
-
-        // Show controls
         controlsLayout.visibility = View.VISIBLE
-
-        // Reset ImageView size and scaling
         val layoutParams = ivFrame.layoutParams
         layoutParams.width = LinearLayout.LayoutParams.MATCH_PARENT
-        layoutParams.height = 0 // Use layout_weight instead
+        layoutParams.height = 0
         ivFrame.layoutParams = layoutParams
         ivFrame.scaleType = ImageView.ScaleType.FIT_CENTER
-
         btnFullscreen.text = "Fullscreen"
     }
 
@@ -178,17 +147,12 @@ class MainActivity : AppCompatActivity() {
         val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val display = windowManager.defaultDisplay
         val displayMetrics = DisplayMetrics()
-
-        // Get real display metrics (including navigation bar, status bar, etc.)
         display.getRealMetrics(displayMetrics)
 
         screenWidth = displayMetrics.widthPixels
         screenHeight = displayMetrics.heightPixels
-
-        // Get refresh rate
         refreshRate = display.refreshRate
 
-        // For landscape orientation, ensure width > height
         if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
             if (screenWidth < screenHeight) {
                 val temp = screenWidth
@@ -197,7 +161,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Initially, server resolution matches client
         serverWidth = screenWidth
         serverHeight = screenHeight
         serverRefreshRate = refreshRate
@@ -206,15 +169,11 @@ class MainActivity : AppCompatActivity() {
     private fun connectToServer() {
         val serverIP = etServerIP.text.toString().trim()
         val portStr = etPort.text.toString().trim()
-
         if (serverIP.isEmpty() || portStr.isEmpty()) {
             Toast.makeText(this, "Please enter server IP and port", Toast.LENGTH_SHORT).show()
             return
         }
-
-        val port = try {
-            portStr.toInt()
-        } catch (e: NumberFormatException) {
+        val port = try { portStr.toInt() } catch (_: NumberFormatException) {
             Toast.makeText(this, "Invalid port number", Toast.LENGTH_SHORT).show()
             return
         }
@@ -235,10 +194,7 @@ class MainActivity : AppCompatActivity() {
         udpReceiver?.stop()
         udpReceiver = null
 
-        // Exit fullscreen if active
-        if (isFullscreen) {
-            exitFullscreen()
-        }
+        if (isFullscreen) exitFullscreen()
 
         btnConnect.isEnabled = true
         btnDisconnect.isEnabled = false
@@ -249,38 +205,33 @@ class MainActivity : AppCompatActivity() {
         updateStatus("Disconnected")
         updateFrameInfo("No frame data")
 
-        // Reset server resolution to match client
         serverWidth = screenWidth
         serverHeight = screenHeight
         serverRefreshRate = refreshRate
         updateResolutionInfo()
 
-        // Clear the image view
-        mainHandler.post {
-            ivFrame.setImageBitmap(null)
-        }
+        stopUiTicker()
+        mainHandler.post { ivFrame.setImageBitmap(null) }
+        backingBitmap = null
     }
 
     private fun updateStatus(status: String) {
-        mainHandler.post {
-            tvStatus.text = "Status: $status"
-        }
+        mainHandler.post { tvStatus.text = "Status: $status" }
     }
 
     private fun updateFrameInfo(info: String) {
-        mainHandler.post {
-            tvFrameInfo.text = info
-        }
+        mainHandler.post { tvFrameInfo.text = info }
     }
 
     private fun updateResolutionInfo() {
         mainHandler.post {
-            val resolutionText = if (serverWidth == screenWidth && serverHeight == screenHeight) {
-                "Resolution: ${screenWidth}x${screenHeight} @ ${refreshRate}Hz"
-            } else {
-                "Client: ${screenWidth}x${screenHeight} @ ${refreshRate}Hz\n" +
-                        "Server: ${serverWidth}x${serverHeight} @ ${serverRefreshRate}Hz (fallback)"
-            }
+            val resolutionText =
+                if (serverWidth == screenWidth && serverHeight == screenHeight) {
+                    "Resolution: ${screenWidth}x${screenHeight} @ ${refreshRate}Hz"
+                } else {
+                    "Client: ${screenWidth}x${screenHeight} @ ${refreshRate}Hz\n" +
+                            "Server: ${serverWidth}x${serverHeight} @ ${serverRefreshRate}Hz (fallback)"
+                }
             tvResolution.text = resolutionText
         }
     }
@@ -292,58 +243,46 @@ class MainActivity : AppCompatActivity() {
         updateResolutionInfo()
     }
 
-    private fun displayFrame(bitmap: Bitmap, frameId: Int, frameTime: Long) {
-        mainHandler.post {
-            // Scale the bitmap to fit the display properly
-            val scaledBitmap = scaleBitmapToFit(bitmap)
-            ivFrame.setImageBitmap(scaledBitmap)
-
-            updateFrameInfo("Frame $frameId (${bitmap.width}x${bitmap.height}) - ${frameTime}ms")
+    private fun ensureBackingBitmap(width: Int, height: Int) {
+        val bmp = backingBitmap
+        if (bmp == null || bmp.width != width || bmp.height != height) {
+            backingBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            mainHandler.post { ivFrame.setImageBitmap(backingBitmap) }
         }
     }
 
-    private fun scaleBitmapToFit(originalBitmap: Bitmap): Bitmap {
-        // Get ImageView dimensions
-        val viewWidth = ivFrame.width
-        val viewHeight = ivFrame.height
-
-        // If ImageView not measured yet, return original
-        if (viewWidth <= 0 || viewHeight <= 0) {
-            return originalBitmap
+    private fun startUiTicker() {
+        if (uiTickerRunning) return
+        uiTickerRunning = true
+        val choreographer = android.view.Choreographer.getInstance()
+        val callback = object : android.view.Choreographer.FrameCallback {
+            override fun doFrame(frameTimeNanos: Long) {
+                if (!uiTickerRunning) return
+                if (uiDirty) {
+                    ivFrame.invalidate()
+                    uiDirty = false
+                }
+                choreographer.postFrameCallback(this)
+            }
         }
-
-        val originalWidth = originalBitmap.width.toFloat()
-        val originalHeight = originalBitmap.height.toFloat()
-
-        // Calculate scale factors
-        val scaleX = viewWidth / originalWidth
-        val scaleY = viewHeight / originalHeight
-        val scaleFactor = minOf(scaleX, scaleY) // Use smaller scale to maintain aspect ratio
-
-        // Calculate new dimensions
-        val newWidth = (originalWidth * scaleFactor).toInt()
-        val newHeight = (originalHeight * scaleFactor).toInt()
-
-        // Only scale if necessary (avoid unnecessary scaling)
-        return if (scaleFactor != 1.0f && newWidth > 0 && newHeight > 0) {
-            Bitmap.createScaledBitmap(originalBitmap, newWidth, newHeight, true)
-        } else {
-            originalBitmap
-        }
+        choreographer.postFrameCallback(callback)
     }
 
-    // Data classes for frame handling
-    data class PacketHeader(
+    private fun stopUiTicker() {
+        uiTickerRunning = false
+    }
+
+    data class DeltaHeader(
         val frameId: Int,
-        val packetId: Int,
-        val totalPackets: Int,
+        val x: Int,
+        val y: Int,
+        val w: Int,
+        val h: Int,
+        val isKeyframe: Boolean,
         val dataSize: Int
     )
 
-    data class FrameInfo(
-        val width: Int,
-        val height: Int
-    )
+    data class FrameInfo(val width: Int, val height: Int)
 
     data class XImageInfo(
         val width: Int,
@@ -363,19 +302,33 @@ class MainActivity : AppCompatActivity() {
         private val serverPort: Int
     ) : Runnable {
 
-        @Volatile
-        private var running = true
+        @Volatile private var running = true
         private var socket: DatagramSocket? = null
         private var frameInfo: FrameInfo? = null
         private var xImageInfo: XImageInfo? = null
-        private val framePackets = mutableMapOf<Int, ByteArray>()
-        private var expectedPackets = 0
-        private var currentFrameId = -1
-        private var packetsReceived = 0
-        private var frameStartTime = 0L
-        private var framesReceived = 0
         private var handshakeComplete = false
         private var displayReady = false
+
+        // Optional line buffer reuse
+        private var lineBuffer: IntArray? = null
+
+        // Streaming metrics
+        private var currentFrameId: Int = -1
+        private var frameFirstSeenMs: Long = 0L
+        private var prevFrameFirstSeenMs: Long = 0L
+        private var estimatedFrameGapMs: Long = 0L
+
+        // Remove decode time (we are not decoding)
+        private var currentFrameDecodeAccumulatedMs: Long = 0L // unused, kept to avoid logic churn
+        private var previousFrameDecodeMs: Long = 0L // unused
+
+        private var fpsWindowStartMs: Long = 0L
+        private var framesInWindow: Int = 0
+        private var fps: Double = 0.0
+
+        private var bitrateWindowStartMs: Long = 0L
+        private var bytesInWindow: Long = 0
+        private var kbps: Double = 0.0
 
         fun stop() {
             running = false
@@ -384,34 +337,37 @@ class MainActivity : AppCompatActivity() {
 
         override fun run() {
             try {
-                // Create socket
+                // Prefer high priority for rendering pipeline
+                try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY) } catch (_: Exception) {}
                 socket = DatagramSocket()
-                socket?.soTimeout = 10000 // 10 seconds timeout
+                socket?.soTimeout = 10000
+                // Larger OS receive buffer to reduce drops
+                try { socket?.receiveBufferSize = 1 shl 20 } catch (_: Exception) {}
 
                 val serverAddress = InetAddress.getByName(serverIP)
                 updateStatus("Socket created. Starting handshake...")
 
-                // Handshake Phase
                 if (!performHandshake(serverAddress)) {
                     updateStatus("Handshake failed")
                     return
                 }
 
-                // Start streaming
                 if (!requestStreaming(serverAddress)) {
                     updateStatus("Failed to start streaming")
                     return
                 }
 
-                // Main receiving loop
-                val buffer = ByteArray(2048)
+                // Start UI ticker once streaming begins
+                mainHandler.post { startUiTicker() }
+
+                val buffer = ByteArray(2048) // packets <= ~1400 bytes
+                val packet = DatagramPacket(buffer, buffer.size)
                 while (running) {
-                    val packet = DatagramPacket(buffer, buffer.size)
                     try {
                         socket?.receive(packet)
                         processReceivedPacket(packet.data, packet.length)
-                    } catch (e: SocketTimeoutException) {
-                        updateStatus("Waiting for data...")
+                    } catch (_: SocketTimeoutException) {
+                        // no status spam here
                     }
                 }
             } catch (e: Exception) {
@@ -423,7 +379,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // ... Keep all existing handshake methods unchanged ...
         private fun performHandshake(serverAddress: InetAddress): Boolean {
             try {
                 updateStatus("Sending HELLO...")
@@ -439,11 +394,7 @@ class MainActivity : AppCompatActivity() {
                 updateStatus("Sending resolution: ${screenWidth}x${screenHeight}@${refreshRate}Hz")
                 if (!sendMessage(serverAddress, resolutionMsg)) return false
 
-                val resolutionResponse = waitForResolutionResponse(15000)
-                if (resolutionResponse == null) {
-                    updateStatus("No resolution response from server")
-                    return false
-                }
+                val resolutionResponse = waitForResolutionResponse(15000) ?: return false
 
                 if (resolutionResponse == "RESOLUTION_ACK") {
                     updateStatus("Resolution accepted by server")
@@ -454,8 +405,7 @@ class MainActivity : AppCompatActivity() {
                     return false
                 }
 
-                val displayReadyMsg = waitForDisplayReady(15000)
-                if (displayReadyMsg == null) {
+                val displayReadyMsg = waitForDisplayReady(15000) ?: run {
                     updateStatus("Display setup timeout")
                     return false
                 }
@@ -463,7 +413,6 @@ class MainActivity : AppCompatActivity() {
                 updateStatus("Display ready: $displayReadyMsg")
                 handshakeComplete = true
                 displayReady = true
-
                 return true
 
             } catch (e: Exception) {
@@ -472,31 +421,21 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // ... Keep other existing methods (handleResolutionChanged, waitForResolutionResponse, etc.) ...
-
         private fun handleResolutionChanged(message: String) {
             try {
                 val parts = message.split(":")
                 if (parts.size >= 3 && parts[0] == "RESOLUTION_CHANGED") {
-                    val resolutionPart = parts[1]
-                    val refreshRatePart = parts[2]
-
-                    val resolutionParts = resolutionPart.split("x")
-                    if (resolutionParts.size == 2) {
-                        val width = resolutionParts[0].toInt()
-                        val height = resolutionParts[1].toInt()
-                        val refreshRate = refreshRatePart.toFloat()
-
-                        updateServerResolution(width, height, refreshRate)
-                        updateStatus("Server using fallback resolution: ${width}x${height}@${refreshRate}Hz")
-
-                        mainHandler.post {
-                            Toast.makeText(
-                                this@MainActivity,
-                                "Server using fallback resolution: ${width}x${height}@${refreshRate}Hz",
-                                Toast.LENGTH_LONG
-                            ).show()
-                        }
+                    val resPart = parts[1]
+                    val rrPart = parts[2]
+                    val r = resPart.split("x")
+                    if (r.size == 2) {
+                        val width = r[0].toInt()
+                        val height = r[1].toInt()
+                        val rr = rrPart.toFloat()
+                        updateServerResolution(width, height, rr)
+                        ensureBackingBitmap(width, height)
+                        // Avoid Toast spam during streaming; comment out:
+                        // mainHandler.post { Toast.makeText(this@MainActivity, "...", Toast.LENGTH_LONG).show() }
                     }
                 }
             } catch (e: Exception) {
@@ -506,57 +445,50 @@ class MainActivity : AppCompatActivity() {
 
         private fun waitForResolutionResponse(timeoutMs: Long): String? {
             val buffer = ByteArray(1024)
-            val startTime = System.currentTimeMillis()
-
-            try {
+            val start = System.currentTimeMillis()
+            return try {
                 socket?.soTimeout = timeoutMs.toInt()
-
-                while (System.currentTimeMillis() - startTime < timeoutMs) {
-                    val packet = DatagramPacket(buffer, buffer.size)
-                    socket?.receive(packet)
-
-                    val receivedMessage = String(packet.data, 0, packet.length)
-
-                    if (receivedMessage == "RESOLUTION_ACK" ||
-                        receivedMessage.startsWith("RESOLUTION_CHANGED:")) {
-                        return receivedMessage
-                    } else if (receivedMessage.startsWith("RESOLUTION_ERROR:")) {
-                        updateStatus("Server error: $receivedMessage")
+                while (System.currentTimeMillis() - start < timeoutMs) {
+                    val p = DatagramPacket(buffer, buffer.size)
+                    socket?.receive(p)
+                    val msg = String(p.data, 0, p.length)
+                    if (msg == "RESOLUTION_ACK" || msg.startsWith("RESOLUTION_CHANGED:")) return msg
+                    if (msg.startsWith("RESOLUTION_ERROR:")) {
+                        updateStatus("Server error: $msg")
                         return null
                     }
                 }
-                return null
-            } catch (e: SocketTimeoutException) {
-                return null
+                null
+            } catch (_: SocketTimeoutException) {
+                null
             } catch (e: Exception) {
                 updateStatus("Wait error: ${e.localizedMessage}")
-                return null
+                null
             }
         }
 
         private fun requestStreaming(serverAddress: InetAddress): Boolean {
-            try {
+            return try {
                 updateStatus("Requesting stream start...")
                 if (!sendMessage(serverAddress, "START_STREAM")) return false
-
                 if (!waitForMessage("STREAM_STARTED", 5000)) {
                     updateStatus("Did not receive STREAM_STARTED")
-                    return false
+                    false
+                } else {
+                    updateStatus("Streaming started")
+                    true
                 }
-                updateStatus("Streaming started")
-                return true
-
             } catch (e: Exception) {
                 updateStatus("Stream request error: ${e.localizedMessage}")
-                return false
+                false
             }
         }
 
         private fun sendMessage(serverAddress: InetAddress, message: String): Boolean {
             return try {
-                val sendData = message.toByteArray()
-                val sendPacket = DatagramPacket(sendData, sendData.size, serverAddress, serverPort)
-                socket?.send(sendPacket)
+                val data = message.toByteArray()
+                val p = DatagramPacket(data, data.size, serverAddress, serverPort)
+                socket?.send(p)
                 true
             } catch (e: Exception) {
                 updateStatus("Send error: ${e.localizedMessage}")
@@ -564,85 +496,81 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        private fun waitForMessage(expectedMessage: String, timeoutMs: Long): Boolean {
+        private fun waitForMessage(expected: String, timeoutMs: Long): Boolean {
             val buffer = ByteArray(1024)
-            val startTime = System.currentTimeMillis()
-
-            try {
+            val start = System.currentTimeMillis()
+            return try {
                 socket?.soTimeout = timeoutMs.toInt()
-
-                while (System.currentTimeMillis() - startTime < timeoutMs) {
-                    val packet = DatagramPacket(buffer, buffer.size)
-                    socket?.receive(packet)
-
-                    val receivedMessage = String(packet.data, 0, packet.length)
-                    if (receivedMessage == expectedMessage) {
-                        return true
-                    } else if (receivedMessage.startsWith("DISPLAY_ERROR:") ||
-                        receivedMessage.startsWith("RESOLUTION_ERROR:")) {
-                        updateStatus("Server error: $receivedMessage")
+                while (System.currentTimeMillis() - start < timeoutMs) {
+                    val p = DatagramPacket(buffer, buffer.size)
+                    socket?.receive(p)
+                    val msg = String(p.data, 0, p.length)
+                    if (msg == expected) return true
+                    if (msg.startsWith("DISPLAY_ERROR:") || msg.startsWith("RESOLUTION_ERROR:")) {
+                        updateStatus("Server error: $msg")
                         return false
                     }
                 }
-                return false
-            } catch (e: SocketTimeoutException) {
-                return false
+                false
+            } catch (_: SocketTimeoutException) {
+                false
             } catch (e: Exception) {
                 updateStatus("Wait error: ${e.localizedMessage}")
-                return false
+                false
             }
         }
 
         private fun waitForDisplayReady(timeoutMs: Long): String? {
             val buffer = ByteArray(1024)
-            val startTime = System.currentTimeMillis()
-
-            try {
+            val start = System.currentTimeMillis()
+            return try {
                 socket?.soTimeout = timeoutMs.toInt()
-
-                while (System.currentTimeMillis() - startTime < timeoutMs) {
-                    val packet = DatagramPacket(buffer, buffer.size)
-                    socket?.receive(packet)
-
-                    val receivedMessage = String(packet.data, 0, packet.length)
-                    if (receivedMessage.startsWith("DISPLAY_READY:")) {
-                        return receivedMessage
-                    } else if (receivedMessage.startsWith("DISPLAY_ERROR:")) {
-                        updateStatus("Server error: $receivedMessage")
+                while (System.currentTimeMillis() - start < timeoutMs) {
+                    val p = DatagramPacket(buffer, buffer.size)
+                    socket?.receive(p)
+                    val msg = String(p.data, 0, p.length)
+                    if (msg.startsWith("DISPLAY_READY:")) {
+                        val parts = msg.split(":")
+                        if (parts.size >= 3) {
+                            val r = parts[2].split("x")
+                            if (r.size == 2) {
+                                val w = r[0].toIntOrNull()
+                                val h = r[1].toIntOrNull()
+                                if (w != null && h != null) {
+                                    frameInfo = FrameInfo(w, h)
+                                    ensureBackingBitmap(w, h)
+                                }
+                            }
+                        }
+                        return msg
+                    }
+                    if (msg.startsWith("DISPLAY_ERROR:")) {
+                        updateStatus("Server error: $msg")
                         return null
                     }
                 }
-                return null
-            } catch (e: SocketTimeoutException) {
-                return null
+                null
+            } catch (_: SocketTimeoutException) {
+                null
             } catch (e: Exception) {
                 updateStatus("Display ready wait error: ${e.localizedMessage}")
-                return null
+                null
             }
         }
 
         private fun processReceivedPacket(data: ByteArray, length: Int) {
             if (!handshakeComplete || !displayReady) return
-
             try {
-                val dataStr = String(data, 0, length)
-
-                // Check for XImage info packet
-                if (dataStr.startsWith("XIMAGE_INFO:")) {
-                    handleXImageInfo(dataStr)
+                val asString = runCatching { String(data, 0, length) }.getOrNull()
+                if (asString != null &&
+                    (asString.startsWith("XIMAGE_INFO:") ||
+                            asString.startsWith("INFO:") ||
+                            asString.startsWith("DISPLAY_ERROR:"))) {
+                    if (asString.startsWith("XIMAGE_INFO:")) { handleXImageInfo(asString); return }
+                    if (asString.startsWith("INFO:")) { handleFrameInfo(asString); return }
                     return
                 }
-
-                // Check for legacy INFO packet (fallback)
-                if (dataStr.startsWith("INFO:")) {
-                    handleFrameInfo(dataStr)
-                    return
-                }
-
-                // Handle frame data packets
-                if (length >= 16) {
-                    handleFramePacket(data, length)
-                }
+                if (length >= 20) handleRectPacket(data, length)
             } catch (e: Exception) {
                 updateStatus("Packet processing error: ${e.localizedMessage}")
             }
@@ -664,11 +592,9 @@ class MainActivity : AppCompatActivity() {
                         greenMask = parts[9].toLong(),
                         blueMask = parts[10].toLong()
                     )
-
                     frameInfo = FrameInfo(xImageInfo!!.width, xImageInfo!!.height)
+                    ensureBackingBitmap(xImageInfo!!.width, xImageInfo!!.height)
                     updateStatus("XImage info received: ${xImageInfo!!.width}x${xImageInfo!!.height}, ${xImageInfo!!.bitsPerPixel} bpp")
-                } else {
-                    updateStatus("Invalid XImage info format")
                 }
             } catch (e: Exception) {
                 updateStatus("XImage info parse error: ${e.localizedMessage}")
@@ -678,260 +604,132 @@ class MainActivity : AppCompatActivity() {
         private fun handleFrameInfo(infoPacket: String) {
             val parts = infoPacket.split(":")
             if (parts.size == 3 && parts[0] == "INFO") {
-                val width = parts[1].toIntOrNull()
-                val height = parts[2].toIntOrNull()
-                if (width != null && height != null) {
-                    frameInfo = FrameInfo(width, height)
+                val w = parts[1].toIntOrNull()
+                val h = parts[2].toIntOrNull()
+                if (w != null && h != null) {
+                    frameInfo = FrameInfo(w, h)
                     xImageInfo = null
-                    updateStatus("RGB frame info received: ${width}x${height}")
+                    ensureBackingBitmap(w, h)
+                    updateStatus("RGB frame info received: ${w}x${h}")
                 }
             }
         }
 
-        private fun handleFramePacket(data: ByteArray, length: Int) {
-            try {
-                val buffer = ByteBuffer.wrap(data)
-                buffer.order(ByteOrder.BIG_ENDIAN)
-
-                val header = PacketHeader(
-                    frameId = buffer.int,
-                    packetId = buffer.int,
-                    totalPackets = buffer.int,
-                    dataSize = buffer.int
-                )
-
-                if (header.dataSize < 0 || header.dataSize > length - 16) {
-                    updateStatus("Invalid packet header")
-                    return
-                }
-
-                if (header.frameId != currentFrameId) {
-                    if (currentFrameId >= 0 && packetsReceived > 0) {
-                        updateStatus("Frame ${currentFrameId}: ${packetsReceived}/${expectedPackets} packets")
-                    }
-
-                    currentFrameId = header.frameId
-                    expectedPackets = header.totalPackets
-                    packetsReceived = 0
-                    framePackets.clear()
-                    frameStartTime = System.currentTimeMillis()
-                }
-
-                val packetData = ByteArray(header.dataSize)
-                buffer.get(packetData, 0, header.dataSize)
-                framePackets[header.packetId] = packetData
-                packetsReceived++
-
-                if (packetsReceived == expectedPackets) {
-                    val frameTime = System.currentTimeMillis() - frameStartTime
-                    reconstructAndDisplayFrame(frameTime)
-                } else if (packetsReceived % 50 == 0) {
-                    updateStatus("Frame ${currentFrameId}: ${packetsReceived}/${expectedPackets}")
-                }
-            } catch (e: Exception) {
-                updateStatus("Frame packet error: ${e.localizedMessage}")
+        private fun handleRectPacket(data: ByteArray, length: Int) {
+            val buffer = ByteBuffer.wrap(data, 0, length).order(ByteOrder.BIG_ENDIAN)
+            val frameId = buffer.int
+            val x = buffer.short.toInt() and 0xFFFF
+            val y = buffer.short.toInt() and 0xFFFF
+            val w = buffer.short.toInt() and 0xFFFF
+            val h = buffer.short.toInt() and 0xFFFF
+            val isKeyframe = (buffer.get().toInt() and 0xFF) == 1
+            buffer.position(buffer.position() + 3)
+            val dataSize = buffer.int
+            if (dataSize < 0 || dataSize > buffer.remaining()) {
+                updateStatus("Invalid rect payload")
+                return
             }
-        }
+            val rgb = ByteArray(dataSize)
+            buffer.get(rgb)
 
-        private fun reconstructAndDisplayFrame(frameTime: Long) {
-            try {
-                val totalSize = framePackets.values.sumOf { it.size }
-                val frameData = ByteArray(totalSize)
+            val fi = frameInfo ?: return
+            ensureBackingBitmap(fi.width, fi.height)
+            val bmp = backingBitmap ?: return
 
-                var offset = 0
-                for (packetId in 0 until expectedPackets) {
-                    val packetData = framePackets[packetId]
-                    if (packetData != null) {
-                        System.arraycopy(packetData, 0, frameData, offset, packetData.size)
-                        offset += packetData.size
-                    } else {
-                        updateStatus("Missing packet $packetId in frame $currentFrameId")
-                        return
-                    }
-                }
-
-                val bitmap = if (xImageInfo != null) {
-                    createBitmapFromXImage(frameData, xImageInfo!!)
-                } else if (frameInfo != null) {
-                    createBitmapFromRGB(frameData, frameInfo!!.width, frameInfo!!.height)
-                } else {
-                    updateStatus("No format info available for frame reconstruction")
-                    return
-                }
-
-                if (bitmap != null) {
-                    framesReceived++
-                    displayFrame(bitmap, currentFrameId, frameTime)
-
-                    if (framesReceived % 10 == 0) {
-                        updateStatus("Received $framesReceived frames")
-                    }
-                } else {
-                    updateStatus("Failed to create bitmap for frame $currentFrameId")
-                }
-
-            } catch (e: Exception) {
-                updateStatus("Frame reconstruction error: ${e.localizedMessage}")
+            if (x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > fi.width || y + h > fi.height) {
+                updateStatus("Rect out of bounds: $x,$y $w x $h")
+                return
             }
-        }
 
-        // ... Keep all existing bitmap creation methods (createBitmapFromXImage, createBitmapFromRGB, etc.) ...
+            // Metrics: detect frame boundary
+            val nowMs = System.currentTimeMillis()
+            if (currentFrameId == -1) {
+                currentFrameId = frameId
+                frameFirstSeenMs = nowMs
+                fpsWindowStartMs = nowMs
+                bitrateWindowStartMs = nowMs
+            } else if (frameId != currentFrameId) {
+                // Finalize previous frame metrics
+                previousFrameDecodeMs = currentFrameDecodeAccumulatedMs
+                currentFrameDecodeAccumulatedMs = 0L
+                prevFrameFirstSeenMs = frameFirstSeenMs
+                frameFirstSeenMs = nowMs
+                estimatedFrameGapMs = frameFirstSeenMs - prevFrameFirstSeenMs
 
-        private fun createBitmapFromXImage(xImageData: ByteArray, xImg: XImageInfo): Bitmap? {
-            try {
-                val expectedSize = xImg.bytesPerLine * xImg.height
-                if (xImageData.size != expectedSize) {
-                    updateStatus("XImage data size mismatch: got ${xImageData.size}, expected $expectedSize")
-                    return null
+                currentFrameId = frameId
+
+                // FPS update (based on first-rect arrivals)
+                framesInWindow += 1
+                val dtFps = nowMs - fpsWindowStartMs
+                if (dtFps >= 1000L) {
+                    fps = framesInWindow.toDouble() * 1000.0 / dtFps.toDouble()
+                    framesInWindow = 0
+                    fpsWindowStartMs = nowMs
                 }
-
-                val bitmap = Bitmap.createBitmap(xImg.width, xImg.height, Bitmap.Config.ARGB_8888)
-                val pixels = IntArray(xImg.width * xImg.height)
-
-                when (xImg.bitsPerPixel) {
-                    32 -> convertXImage32bpp(xImageData, pixels, xImg)
-                    24 -> convertXImage24bpp(xImageData, pixels, xImg)
-                    16 -> convertXImage16bpp(xImageData, pixels, xImg)
-                    else -> {
-                        updateStatus("Unsupported XImage format: ${xImg.bitsPerPixel} bpp")
-                        return null
-                    }
-                }
-
-                bitmap.setPixels(pixels, 0, xImg.width, 0, 0, xImg.width, xImg.height)
-                return bitmap
-
-            } catch (e: Exception) {
-                updateStatus("XImage bitmap creation error: ${e.localizedMessage}")
-                return null
             }
-        }
 
-        private fun convertXImage32bpp(data: ByteArray, pixels: IntArray, xImg: XImageInfo) {
-            val bytesPerPixel = 4
-            var pixelIndex = 0
+            // Apply rect (no decode timing)
+            applyRgbRect(bmp, x, y, w, h, rgb)
 
-            val redShift = getShiftFromMask(xImg.redMask)
-            val greenShift = getShiftFromMask(xImg.greenMask)
-            val blueShift = getShiftFromMask(xImg.blueMask)
+            // Bitrate (payload only)
+            bytesInWindow += dataSize.toLong()
+            val dtBr = nowMs - bitrateWindowStartMs
+            if (dtBr >= 1000L) {
+                // kbps = kilobits per second
+                kbps = (bytesInWindow.toDouble() * 8.0) / (dtBr.toDouble() / 1000.0) / 1000.0
+                bytesInWindow = 0
+                bitrateWindowStartMs = nowMs
+            }
 
-            for (y in 0 until xImg.height) {
-                var lineOffset = y * xImg.bytesPerLine
-
-                for (x in 0 until xImg.width) {
-                    val pixel = ((data[lineOffset + 3].toInt() and 0xFF) shl 24) or
-                            ((data[lineOffset + 2].toInt() and 0xFF) shl 16) or
-                            ((data[lineOffset + 1].toInt() and 0xFF) shl 8) or
-                            (data[lineOffset].toInt() and 0xFF)
-
-                    val r = ((pixel and xImg.redMask.toInt()) ushr redShift) and 0xFF
-                    val g = ((pixel and xImg.greenMask.toInt()) ushr greenShift) and 0xFF
-                    val b = ((pixel and xImg.blueMask.toInt()) ushr blueShift) and 0xFF
-
-                    pixels[pixelIndex++] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
-                    lineOffset += bytesPerPixel
+            // Mark UI dirty and throttle label updates
+            uiDirty = true
+            val now = System.currentTimeMillis()
+            if (now - lastInfoUpdateMs >= 250) {
+                lastInfoUpdateMs = now
+                mainHandler.post {
+                    val fpsStr = if (fps > 0) String.format("%.1f", fps) else "-"
+                    val kbpsStr = if (kbps > 0) String.format("%.1f", kbps) else "-"
+                    val info = StringBuilder()
+                    info.append("Frame ").append(frameId)
+                        .append(" (").append(fi.width).append("x").append(fi.height).append(") ")
+                        .append("rect=").append(x).append(",").append(y).append(" ")
+                        .append(w).append("x").append(h)
+                        .append(" key=").append(isKeyframe)
+                        .append("\n")
+                        .append("FPS: ").append(fpsStr)
+                        .append("    Bitrate: ").append(kbpsStr).append(" kbps")
+                        .append("\n")
+                        .append("Inter-frame gap: ").append(estimatedFrameGapMs).append("ms")
+                    tvFrameInfo.text = info.toString()
                 }
             }
         }
 
-        private fun convertXImage24bpp(data: ByteArray, pixels: IntArray, xImg: XImageInfo) {
-            val bytesPerPixel = 3
-            var pixelIndex = 0
-
-            for (y in 0 until xImg.height) {
-                var lineOffset = y * xImg.bytesPerLine
-
-                for (x in 0 until xImg.width) {
-                    val r = data[lineOffset].toInt() and 0xFF
-                    val g = data[lineOffset + 1].toInt() and 0xFF
-                    val b = data[lineOffset + 2].toInt() and 0xFF
-
-                    pixels[pixelIndex++] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
-                    lineOffset += bytesPerPixel
-                }
+        private fun applyRgbRect(bitmap: Bitmap, x: Int, y: Int, w: Int, h: Int, rgb: ByteArray) {
+            if (rgb.size < w * h * 3) return
+            var line = lineBuffer
+            if (line == null || line!!.size < w) {
+                line = IntArray(w)
+                lineBuffer = line
             }
-        }
-
-        private fun convertXImage16bpp(data: ByteArray, pixels: IntArray, xImg: XImageInfo) {
-            val bytesPerPixel = 2
-            var pixelIndex = 0
-
-            for (y in 0 until xImg.height) {
-                var lineOffset = y * xImg.bytesPerLine
-
-                for (x in 0 until xImg.width) {
-                    // Read 16-bit pixel (little-endian)
-                    val pixel = ((data[lineOffset + 1].toInt() and 0xFF) shl 8) or
-                            (data[lineOffset].toInt() and 0xFF)
-
-                    // Common 16-bit formats: 565 RGB or 555 RGB
-                    val r: Int
-                    val g: Int
-                    val b: Int
-
-                    if (xImg.redMask == 0xF800L && xImg.greenMask == 0x07E0L && xImg.blueMask == 0x001FL) {
-                        // 565 RGB format
-                        r = ((pixel and 0xF800) shr 8) or ((pixel and 0xF800) shr 13)
-                        g = ((pixel and 0x07E0) shr 3) or ((pixel and 0x07E0) shr 9)
-                        b = ((pixel and 0x001F) shl 3) or ((pixel and 0x001F) shr 2)
-                    } else {
-                        // 555 RGB format or other - use generic mask extraction
-                        val redShift = getShiftFromMask(xImg.redMask)
-                        val greenShift = getShiftFromMask(xImg.greenMask)
-                        val blueShift = getShiftFromMask(xImg.blueMask)
-
-                        r = ((pixel and xImg.redMask.toInt()) ushr redShift) shl 3
-                        g = ((pixel and xImg.greenMask.toInt()) ushr greenShift) shl 3
-                        b = ((pixel and xImg.blueMask.toInt()) ushr blueShift) shl 3
-                    }
-
-                    pixels[pixelIndex++] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
-
-                    lineOffset += bytesPerPixel
+            var src = 0
+            for (row in 0 until h) {
+                var i = 0
+                var s = src
+                while (i < w) {
+                    val r = rgb[s].toInt() and 0xFF
+                    val g = rgb[s + 1].toInt() and 0xFF
+                    val b = rgb[s + 2].toInt() and 0xFF
+                    line!![i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+                    s += 3
+                    i++
                 }
-            }
-        }
-
-        private fun getShiftFromMask(mask: Long): Int {
-            if (mask == 0L) return 0
-            var shift = 0
-            var tempMask = mask
-            while ((tempMask and 1L) == 0L) {
-                tempMask = tempMask ushr 1
-                shift++
-            }
-            return shift
-        }
-
-        // Keep existing createBitmapFromRGB method for fallback RGB support
-        private fun createBitmapFromRGB(rgbData: ByteArray, width: Int, height: Int): Bitmap? {
-            try {
-                val expectedSize = width * height * 3
-                if (rgbData.size != expectedSize) {
-                    updateStatus("RGB data size mismatch: got ${rgbData.size}, expected $expectedSize")
-                    return null
-                }
-
-                val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                val pixels = IntArray(width * height)
-
-                for (i in pixels.indices) {
-                    val rgbIndex = i * 3
-                    val r = rgbData[rgbIndex].toInt() and 0xFF
-                    val g = rgbData[rgbIndex + 1].toInt() and 0xFF
-                    val b = rgbData[rgbIndex + 2].toInt() and 0xFF
-                    pixels[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
-                }
-
-                bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
-                return bitmap
-
-            } catch (e: Exception) {
-                updateStatus("RGB bitmap creation error: ${e.localizedMessage}")
-                return null
+                bitmap.setPixels(line!!, 0, w, x, y + row, w, 1)
+                src += w * 3
             }
         }
     }
+
     override fun onDestroy() {
         super.onDestroy()
         disconnectFromServer()

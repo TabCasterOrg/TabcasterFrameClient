@@ -43,7 +43,7 @@ class MainActivity : AppCompatActivity() {
     private var executorService: ExecutorService? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // Add dedicated thread pool for WebP decoding
+    // Add dedicated thread pool for PNG decoding
     private var decodingExecutor: ExecutorService? = null
     private val maxPendingFrames = 2 // Drop frames if more than this are pending
 
@@ -75,14 +75,14 @@ class MainActivity : AppCompatActivity() {
     // Bitmap optimization
     private var previousBitmap: Bitmap? = null
 
-    // Optimized bitmap options for WebP
+    // Optimized bitmap options for PNG (much faster than WebP)
     private val optimizedBitmapOptions = BitmapFactory.Options().apply {
         inMutable = true
-        inPreferredConfig = Bitmap.Config.ARGB_8888 // Better for WebP decoding
+        inPreferredConfig = Bitmap.Config.ARGB_8888 // PNG handles this efficiently
         inSampleSize = 1
         inDither = false
         inPreferQualityOverSpeed = false // Prioritize speed
-        inTempStorage = ByteArray(16 * 1024) // Reuse temp storage
+        inTempStorage = ByteArray(32 * 1024) // Larger temp buffer for PNG
     }
 
     // FPS and latency tracking
@@ -103,8 +103,6 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-
-
 
         initializeViews()
         // Auto-fill defaults
@@ -379,8 +377,8 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Optimized frame display with background decoding and frame dropping
-    private fun displayFrame(webpData: ByteArray, frameId: Int, frameTime: Long, compressedSize: Int) {
+    // Optimized frame display with background decoding and frame dropping (now PNG instead of WebP)
+    private fun displayFrame(pngData: ByteArray, frameId: Int, frameTime: Long, compressedSize: Int) {
         // Frame dropping: Skip if too many frames are pending decode
         if (pendingDecodes >= maxPendingFrames) {
             droppedFrames++
@@ -393,13 +391,13 @@ class MainActivity : AppCompatActivity() {
 
         pendingDecodes++
 
-        // Decode WebP on background thread to avoid blocking UI
+        // Decode PNG on background thread to avoid blocking UI
         decodingExecutor?.submit {
             val decodeStartTime = System.nanoTime()
 
             try {
-                // WebP decoding happens on background thread
-                val bitmap = BitmapFactory.decodeByteArray(webpData, 0, webpData.size, optimizedBitmapOptions)
+                // PNG decoding happens on background thread (much faster than WebP)
+                val bitmap = BitmapFactory.decodeByteArray(pngData, 0, pngData.size, optimizedBitmapOptions)
 
                 val decodeTimeMs = (System.nanoTime() - decodeStartTime) / 1_000_000
 
@@ -435,10 +433,10 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
                 } else {
-                    updateFrameInfo("Failed to decode WebP frame $frameId")
+                    updateFrameInfo("Failed to decode PNG frame $frameId")
                 }
             } catch (e: Exception) {
-                updateFrameInfo("WebP decode error: ${e.message}")
+                updateFrameInfo("PNG decode error: ${e.message}")
             } finally {
                 pendingDecodes--
             }
@@ -749,7 +747,8 @@ class MainActivity : AppCompatActivity() {
 
                 if (width != null && height != null) {
                     frameInfo = FrameInfo(width, height)
-                    updateStatus("Frame info received: ${width}x${height} (WebP)")
+                    // Update status to show PNG format instead of WebP
+                    updateStatus("Frame info received: ${width}x${height} (PNG)")
                 } else {
                     updateStatus("Invalid frame info format")
                 }
@@ -833,11 +832,11 @@ class MainActivity : AppCompatActivity() {
                 framesReceived++
                 lastFrameDisplayTime = now
 
-                // Send to optimized display function
+                // Send to optimized display function (now PNG instead of WebP)
                 displayFrame(frameData, currentFrameId, frameTime, totalSize)
 
                 if (framesReceived % 30 == 0) {
-                    updateStatus("Received $framesReceived WebP frames")
+                    updateStatus("Received $framesReceived PNG frames")
                 }
 
             } catch (e: Exception) {

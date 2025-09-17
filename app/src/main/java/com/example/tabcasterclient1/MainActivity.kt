@@ -26,7 +26,7 @@ import java.util.concurrent.Executors
 class MainActivity : AppCompatActivity() {
 
     private lateinit var etServerIP: EditText
-    private lateinit var etPort: EditText
+    // No need for a port field anymore, due to the chosen 23532 port.
     private lateinit var btnConnect: Button
     private lateinit var btnDisconnect: Button
     private lateinit var btnFullscreen: Button
@@ -62,6 +62,8 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var uiDirty = false
     @Volatile private var uiTickerRunning = false
     private var lastInfoUpdateMs = 0L
+    // Integers
+    val port = 23532 // This is the chosen port number. The user cannot change this.
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -80,7 +82,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun initializeViews() {
         etServerIP = findViewById(R.id.et_server_ip)
-        etPort = findViewById(R.id.et_port)
         btnConnect = findViewById(R.id.btn_connect)
         btnDisconnect = findViewById(R.id.btn_disconnect)
         btnFullscreen = findViewById(R.id.btn_fullscreen)
@@ -98,7 +99,6 @@ class MainActivity : AppCompatActivity() {
 
         // Defaults
         etServerIP.setText("10.1.10.105")
-        etPort.setText("23532")
     }
 
     private fun setupWindowInsets() {
@@ -168,13 +168,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun connectToServer() {
         val serverIP = etServerIP.text.toString().trim()
-        val portStr = etPort.text.toString().trim()
-        if (serverIP.isEmpty() || portStr.isEmpty()) {
+
+        if (serverIP.isEmpty()) {
             Toast.makeText(this, "Please enter server IP and port", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val port = try { portStr.toInt() } catch (_: NumberFormatException) {
-            Toast.makeText(this, "Invalid port number", Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -185,7 +181,6 @@ class MainActivity : AppCompatActivity() {
         btnDisconnect.isEnabled = true
         btnFullscreen.isEnabled = true
         etServerIP.isEnabled = false
-        etPort.isEnabled = false
 
         updateStatus("Connecting to $serverIP:$port")
     }
@@ -200,7 +195,6 @@ class MainActivity : AppCompatActivity() {
         btnDisconnect.isEnabled = false
         btnFullscreen.isEnabled = false
         etServerIP.isEnabled = true
-        etPort.isEnabled = true
 
         updateStatus("Disconnected")
         updateFrameInfo("No frame data")

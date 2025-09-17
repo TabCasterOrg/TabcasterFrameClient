@@ -3,10 +3,12 @@ package com.example.tabcasterclient1
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Paint
+import android.net.InetAddresses
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.DisplayMetrics
+import android.util.Log
 import android.view.View
 import android.view.WindowManager
 import android.widget.*
@@ -23,6 +25,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import kotlin.math.log
 
 class MainActivity : AppCompatActivity() {
 
@@ -75,7 +78,7 @@ class MainActivity : AppCompatActivity() {
         executorService = Executors.newSingleThreadExecutor()
 
         getScreenResolution()
-        setupClickListeners()
+        setupListeners()
         updateStatus("Ready")
         updateFrameInfo("No frame data")
         updateResolutionInfo()
@@ -105,11 +108,12 @@ class MainActivity : AppCompatActivity() {
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
     }
 
-    private fun setupClickListeners() {
+    private fun setupListeners() {
         btnConnect.setOnClickListener { connectToServer() }
         btnDisconnect.setOnClickListener { disconnectFromServer() }
         btnFullscreen.setOnClickListener { toggleFullscreen() }
         ivFrame.setOnClickListener { if (btnFullscreen.isEnabled) toggleFullscreen() }
+        etServerIP.addOnEditTextAttachedListener { updateConnectionButton() }
     }
 
     private fun toggleFullscreen() {
@@ -209,6 +213,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateStatus(status: String) {
         mainHandler.post { tvStatus.text = "Status: $status" }
+    }
+
+    private fun updateConnectionButton(){
+        var validIP = InetAddresses.isNumericAddress(etServerIP.editText.toString().trim())
+        btnConnect.text = if (validIP) "CONNECT" else "HELP"
     }
 
     private fun updateFrameInfo(info: String) {

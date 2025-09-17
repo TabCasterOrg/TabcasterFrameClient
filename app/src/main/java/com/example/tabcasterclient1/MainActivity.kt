@@ -14,6 +14,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.google.android.material.textfield.TextInputLayout
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -25,7 +26,7 @@ import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var etServerIP: EditText
+    private lateinit var etServerIP: TextInputLayout
     // No need for a port field anymore, due to the chosen 23532 port.
     private lateinit var btnConnect: Button
     private lateinit var btnDisconnect: Button
@@ -96,9 +97,6 @@ class MainActivity : AppCompatActivity() {
 
         btnFullscreen.text = "Fullscreen"
         btnFullscreen.isEnabled = false
-
-        // Defaults
-        etServerIP.setText("10.1.10.105")
     }
 
     private fun setupWindowInsets() {
@@ -167,7 +165,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun connectToServer() {
-        val serverIP = etServerIP.text.toString().trim()
+        val serverIP = etServerIP.editText.toString().trim() // Get the server IP form the text.
 
         if (serverIP.isEmpty()) {
             Toast.makeText(this, "Please enter server IP and port", Toast.LENGTH_SHORT).show()

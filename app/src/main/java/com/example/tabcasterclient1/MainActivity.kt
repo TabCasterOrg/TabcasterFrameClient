@@ -3,6 +3,9 @@ package com.example.tabcasterclient1
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
+import android.graphics.drawable.Drawable
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -57,6 +60,13 @@ class MainActivity : AppCompatActivity() {
     private var totalDecodeTime = 0L
     private var decodedFrameCount = 0
     private var avgDecodeTime = 0f
+    
+    // Hardware acceleration support
+    private var isHardwareAccelerationSupported = false
+    private var hardwareDecodeCount = 0
+    private var softwareDecodeCount = 0
+    private var totalHardwareDecodeTime = 0L
+    private var totalSoftwareDecodeTime = 0L
 
     // Screen resolution info
     private var screenWidth: Int = 0
@@ -75,14 +85,26 @@ class MainActivity : AppCompatActivity() {
     // Bitmap optimization
     private var previousBitmap: Bitmap? = null
 
-    // Optimized bitmap options for PNG (much faster than WebP)
-    private val optimizedBitmapOptions = BitmapFactory.Options().apply {
+    // Optimized bitmap options for hardware acceleration
+    private val hardwareBitmapOptions = BitmapFactory.Options().apply {
         inMutable = true
-        inPreferredConfig = Bitmap.Config.ARGB_8888 // PNG handles this efficiently
+        inPreferredConfig = Bitmap.Config.ARGB_8888
         inSampleSize = 1
         inDither = false
-        inPreferQualityOverSpeed = false // Prioritize speed
-        inTempStorage = ByteArray(32 * 1024) // Larger temp buffer for PNG
+        inPreferQualityOverSpeed = false
+        inTempStorage = ByteArray(64 * 1024) // Larger temp buffer for hardware acceleration
+        inJustDecodeBounds = false
+        inScaled = false // Let hardware handle scaling
+    }
+    
+    // Fallback bitmap options for software decoding
+    private val softwareBitmapOptions = BitmapFactory.Options().apply {
+        inMutable = true
+        inPreferredConfig = Bitmap.Config.ARGB_8888
+        inSampleSize = 1
+        inDither = false
+        inPreferQualityOverSpeed = false
+        inTempStorage = ByteArray(32 * 1024)
     }
 
     // FPS and latency tracking
@@ -115,6 +137,9 @@ class MainActivity : AppCompatActivity() {
         // Initialize single decoding thread (one thread is better for sequential frame processing)
         decodingExecutor = Executors.newSingleThreadExecutor()
 
+        // Initialize hardware acceleration support
+        initializeHardwareAcceleration()
+
         getScreenResolution()
 
         updateStatus("Ready")
@@ -145,6 +170,15 @@ class MainActivity : AppCompatActivity() {
             if (isStreaming) {
                 toggleFullscreen()
             }
+        }
+    }
+
+    private fun initializeHardwareAcceleration() {
+        isHardwareAccelerationSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+        if (isHardwareAccelerationSupported) {
+            updateStatus("Hardware acceleration enabled (ImageDecoder)")
+        } else {
+            updateStatus("Using software decoding (BitmapFactory)")
         }
     }
 
@@ -201,7 +235,7 @@ class MainActivity : AppCompatActivity() {
         isStreaming = false
 
         // Clean up bitmap
-        previousBitmap?.recycle()
+        recycleBitmapSafely(previousBitmap)
         previousBitmap = null
 
         // Reset FPS tracking
@@ -215,6 +249,12 @@ class MainActivity : AppCompatActivity() {
         totalDecodeTime = 0L
         decodedFrameCount = 0
         avgDecodeTime = 0f
+        
+        // Reset hardware acceleration statistics
+        hardwareDecodeCount = 0
+        softwareDecodeCount = 0
+        totalHardwareDecodeTime = 0L
+        totalSoftwareDecodeTime = 0L
 
         btnConnect.isEnabled = true
         btnDisconnect.isEnabled = false
@@ -328,8 +368,17 @@ class MainActivity : AppCompatActivity() {
     private fun updateOptimizedFrameInfo(frameId: Int, latency: Long, width: Int, height: Int, decodeTime: Long) {
         val fpsText = if (currentFPS > 0) String.format("%.1f", currentFPS) else "---"
         val avgDecodeText = if (avgDecodeTime > 0) String.format("%.1f", avgDecodeTime) else "---"
+        
+        // Add hardware acceleration info
+        val hwAccelText = if (isHardwareAccelerationSupported) {
+            val hwAvg = if (hardwareDecodeCount > 0) totalHardwareDecodeTime / hardwareDecodeCount else 0L
+            val swAvg = if (softwareDecodeCount > 0) totalSoftwareDecodeTime / softwareDecodeCount else 0L
+            " | HW: ${hwAvg}ms (${hardwareDecodeCount}) | SW: ${swAvg}ms (${softwareDecodeCount})"
+        } else {
+            " | SW: ${avgDecodeText}ms"
+        }
 
-        val info = "Frame: $frameId | ${width}x${height} | Net: ${latency}ms | Decode: ${decodeTime}ms (avg: ${avgDecodeText}ms) | ${fpsText} FPS"
+        val info = "Frame: $frameId | ${width}x${height} | Net: ${latency}ms | Decode: ${decodeTime}ms (avg: ${avgDecodeText}ms) | ${fpsText} FPS$hwAccelText"
 
         if (droppedFrames > 0) {
             tvFrameInfo.text = "$info | Dropped: $droppedFrames"
@@ -355,6 +404,55 @@ class MainActivity : AppCompatActivity() {
         serverHeight = height
         serverRefreshRate = refreshRate
         updateResolutionInfo()
+    }
+
+    // Hardware-accelerated image decoding using ImageDecoder (API 28+)
+    private fun decodeImageHardware(pngData: ByteArray): Bitmap? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try {
+                val source = ImageDecoder.createSource(pngData)
+
+                // Use ImageDecoder.decodeBitmap with configuration
+                ImageDecoder.decodeBitmap(source) { decoder, info, source ->
+                    // Configure for hardware acceleration
+                    decoder.allocator = ImageDecoder.ALLOCATOR_HARDWARE
+                    decoder.setUnpremultipliedRequired(false)
+                }
+            } catch (e: Exception) {
+                // Fallback to software decoding if hardware fails
+                decodeImageSoftware(pngData)
+            }
+        } else {
+            // Fallback to software decoding for older API levels
+            decodeImageSoftware(pngData)
+        }
+    }
+    
+    // Software image decoding using BitmapFactory (fallback)
+    private fun decodeImageSoftware(pngData: ByteArray): Bitmap? {
+        return try {
+            BitmapFactory.decodeByteArray(pngData, 0, pngData.size, softwareBitmapOptions)
+        } catch (e: Exception) {
+            null
+        }
+    }
+    
+    // Unified image decoding method that chooses the best approach
+    private fun decodeImage(pngData: ByteArray): Bitmap? {
+        return if (isHardwareAccelerationSupported) {
+            decodeImageHardware(pngData)
+        } else {
+            decodeImageSoftware(pngData)
+        }
+    }
+    
+    // Memory-optimized bitmap recycling
+    private fun recycleBitmapSafely(bitmap: Bitmap?) {
+        try {
+            bitmap?.recycle()
+        } catch (e: Exception) {
+            // Ignore recycling errors
+        }
     }
 
     // FPS calculation
@@ -396,16 +494,25 @@ class MainActivity : AppCompatActivity() {
             val decodeStartTime = System.nanoTime()
 
             try {
-                // PNG decoding happens on background thread (much faster than WebP)
-                val bitmap = BitmapFactory.decodeByteArray(pngData, 0, pngData.size, optimizedBitmapOptions)
+                // Use hardware-accelerated decoding when available
+                val bitmap = decodeImage(pngData)
 
                 val decodeTimeMs = (System.nanoTime() - decodeStartTime) / 1_000_000
 
-                // Update decode time statistics
+                // Update decode time statistics with hardware/software tracking
                 synchronized(this) {
                     totalDecodeTime += decodeTimeMs
                     decodedFrameCount++
                     avgDecodeTime = totalDecodeTime.toFloat() / decodedFrameCount
+                    
+                    // Track hardware vs software performance
+                    if (isHardwareAccelerationSupported && bitmap != null) {
+                        hardwareDecodeCount++
+                        totalHardwareDecodeTime += decodeTimeMs
+                    } else {
+                        softwareDecodeCount++
+                        totalSoftwareDecodeTime += decodeTimeMs
+                    }
                 }
 
                 if (bitmap != null) {
@@ -413,7 +520,7 @@ class MainActivity : AppCompatActivity() {
                     mainHandler.post {
                         try {
                             // Recycle previous bitmap to prevent memory leaks
-                            previousBitmap?.recycle()
+                            recycleBitmapSafely(previousBitmap)
 
                             // Display new frame
                             ivFrame.setImageBitmap(bitmap)
@@ -847,7 +954,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        previousBitmap?.recycle()
+        recycleBitmapSafely(previousBitmap)
         previousBitmap = null
         disconnectFromServer()
 

@@ -50,17 +50,6 @@
         android:orientation="vertical"
         android:padding="12dp">
 
-
-        <Button
-            android:id="@+id/btn_connect"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-
-            android:layout_marginBottom="8dp"
-            android:text="Video Stream"
-            android:textSize="16sp"
-            android:textStyle="bold" />
-
         <TextView
             android:id="@+id/tv_frame_info"
             android:layout_width="wrap_content"
@@ -106,16 +95,18 @@
 
     </LinearLayout>
     <!-- Controls Layout - Bottom section -->
+    </LinearLayout>
+
     <LinearLayout
         android:id="@+id/controlsLayout"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:background="#1a1a1a"
         android:orientation="vertical"
         android:padding="6dp"
-        android:background="#1a1a1a"
         app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent">
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -124,10 +115,10 @@
 
             <!-- Server Input -->
             <com.google.android.material.textfield.TextInputLayout
-                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
                 android:id="@+id/serverTextFieldLayout"
-                android:layout_height="wrap_content"
+                style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
                 android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
                 android:layout_weight="75">
                 <!-- Layout weight is really nice because it prevents fixed-size elements, instead adapting to screen sizes. -->
 
@@ -138,14 +129,13 @@
                     android:layout_height="match_parent"
                     android:hint="IP Address"
                     android:imeOptions="actionDone"
-                    android:inputType="textNoSuggestions"
-                    />
+                    android:inputType="textNoSuggestions" />
 
             </com.google.android.material.textfield.TextInputLayout>
 
             <!-- Connect Button -->
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/connectButton"
+                android:id="@+id/btn_connect"
                 android:layout_width="wrap_content"
                 android:layout_height="match_parent"
                 android:layout_marginStart="8dp"
@@ -154,14 +144,13 @@
                 android:drawableLeft="@drawable/connect_icon"
 
                 android:text="Help"
-                android:textStyle="bold"
                 android:textColor="#000000"
-                />
+                android:textStyle="bold" />
 
             <!-- Disconnect Button (initially hidden) -->
             <!-- Eventually, maybe, make this a state of the connected button -->
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/disconnectButton"
+                android:id="@+id/btn_disconnect"
                 android:layout_width="104dp"
                 android:layout_height="match_parent"
                 android:layout_marginStart="8dp"
@@ -172,21 +161,21 @@
                 android:visibility="visible" />
 
             <!-- Servers Button -->
-<!--            <com.google.android.material.button.MaterialButton-->
-<!--                android:id="@+id/serversButton"-->
-<!--                style="@style/Widget.MaterialComponents.Button.OutlinedButton"-->
-<!--                android:layout_width="wrap_content"-->
-<!--                android:layout_height="match_parent"-->
-<!--                android:layout_marginStart="8dp"-->
-<!--                android:layout_marginEnd="8dp"-->
-<!--                android:layout_weight="5"-->
-<!--                app:icon="@drawable/servers_icon"-->
-<!--                android:text="Servers" />-->
+            <!--            <com.google.android.material.button.MaterialButton-->
+            <!--                android:id="@+id/serversButton"-->
+            <!--                style="@style/Widget.MaterialComponents.Button.OutlinedButton"-->
+            <!--                android:layout_width="wrap_content"-->
+            <!--                android:layout_height="match_parent"-->
+            <!--                android:layout_marginStart="8dp"-->
+            <!--                android:layout_marginEnd="8dp"-->
+            <!--                android:layout_weight="5"-->
+            <!--                app:icon="@drawable/servers_icon"-->
+            <!--                android:text="Servers" />-->
             <!-- Using app:icon over android:drawable makes it green -->
 
             <!-- Hide Button -->
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/hideButton"
+                android:id="@+id/btn_fullscreen"
                 style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                 android:layout_width="54dp"
                 android:layout_height="match_parent"
@@ -195,10 +184,6 @@
                 android:layout_weight="0"
                 android:gravity="center"
                 app:icon="@drawable/hide_icon" />
-
-
         </LinearLayout>
     </LinearLayout>
-
-
 </LinearLayout>

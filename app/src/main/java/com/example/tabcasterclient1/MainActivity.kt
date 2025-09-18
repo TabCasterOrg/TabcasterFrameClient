@@ -60,7 +60,7 @@ class MainActivity : AppCompatActivity() {
     private var totalDecodeTime = 0L
     private var decodedFrameCount = 0
     private var avgDecodeTime = 0f
-    
+
     // Hardware acceleration support
     private var isHardwareAccelerationSupported = false
     private var hardwareDecodeCount = 0
@@ -96,7 +96,7 @@ class MainActivity : AppCompatActivity() {
         inJustDecodeBounds = false
         inScaled = false // Let hardware handle scaling
     }
-    
+
     // Fallback bitmap options for software decoding
     private val softwareBitmapOptions = BitmapFactory.Options().apply {
         inMutable = true
@@ -249,7 +249,7 @@ class MainActivity : AppCompatActivity() {
         totalDecodeTime = 0L
         decodedFrameCount = 0
         avgDecodeTime = 0f
-        
+
         // Reset hardware acceleration statistics
         hardwareDecodeCount = 0
         softwareDecodeCount = 0
@@ -368,7 +368,7 @@ class MainActivity : AppCompatActivity() {
     private fun updateOptimizedFrameInfo(frameId: Int, latency: Long, width: Int, height: Int, decodeTime: Long) {
         val fpsText = if (currentFPS > 0) String.format("%.1f", currentFPS) else "---"
         val avgDecodeText = if (avgDecodeTime > 0) String.format("%.1f", avgDecodeTime) else "---"
-        
+
         // Add hardware acceleration info
         val hwAccelText = if (isHardwareAccelerationSupported) {
             val hwAvg = if (hardwareDecodeCount > 0) totalHardwareDecodeTime / hardwareDecodeCount else 0L
@@ -427,7 +427,7 @@ class MainActivity : AppCompatActivity() {
             decodeImageSoftware(pngData)
         }
     }
-    
+
     // Software image decoding using BitmapFactory (fallback)
     private fun decodeImageSoftware(pngData: ByteArray): Bitmap? {
         return try {
@@ -436,7 +436,7 @@ class MainActivity : AppCompatActivity() {
             null
         }
     }
-    
+
     // Unified image decoding method that chooses the best approach
     private fun decodeImage(pngData: ByteArray): Bitmap? {
         return if (isHardwareAccelerationSupported) {
@@ -445,7 +445,7 @@ class MainActivity : AppCompatActivity() {
             decodeImageSoftware(pngData)
         }
     }
-    
+
     // Memory-optimized bitmap recycling
     private fun recycleBitmapSafely(bitmap: Bitmap?) {
         try {
@@ -504,7 +504,7 @@ class MainActivity : AppCompatActivity() {
                     totalDecodeTime += decodeTimeMs
                     decodedFrameCount++
                     avgDecodeTime = totalDecodeTime.toFloat() / decodedFrameCount
-                    
+
                     // Track hardware vs software performance
                     if (isHardwareAccelerationSupported && bitmap != null) {
                         hardwareDecodeCount++
@@ -854,8 +854,13 @@ class MainActivity : AppCompatActivity() {
 
                 if (width != null && height != null) {
                     frameInfo = FrameInfo(width, height)
-                    // Update status to show PNG format instead of WebP
-                    updateStatus("Frame info received: ${width}x${height} (PNG)")
+                    // Backward and forward compatible status: detect optional DELTA flag
+                    val hasDelta = parts.size >= 4 && parts[3] == "DELTA"
+                    if (hasDelta) {
+                        updateStatus("Frame info received: ${width}x${height} (PNG+DELTA)")
+                    } else {
+                        updateStatus("Frame info received: ${width}x${height} (PNG)")
+                    }
                 } else {
                     updateStatus("Invalid frame info format")
                 }
@@ -939,8 +944,70 @@ class MainActivity : AppCompatActivity() {
                 framesReceived++
                 lastFrameDisplayTime = now
 
-                // Send to optimized display function (now PNG instead of WebP)
-                displayFrame(frameData, currentFrameId, frameTime, totalSize)
+                // Detect delta region payload by magic 'DREG' prefix
+                if (totalSize >= 4 &&
+                    frameData[0] == 'D'.code.toByte() &&
+                    frameData[1] == 'R'.code.toByte() &&
+                    frameData[2] == 'E'.code.toByte() &&
+                    frameData[3] == 'G'.code.toByte()) {
+                    // Parse RegionHeader: x,y,w,h (uint16 BE), flags (u8), quality (u8), reserved (u16 BE)
+                    if (totalSize < 4 + 2 + 2 + 2 + 2 + 1 + 1 + 2) {
+                        updateStatus("Delta header too small")
+                        return
+                    }
+                    var p = 4
+                    fun readU16BE(): Int {
+                        val v = ((frameData[p].toInt() and 0xFF) shl 8) or (frameData[p+1].toInt() and 0xFF)
+                        p += 2
+                        return v
+                    }
+                    val rx = readU16BE()
+                    val ry = readU16BE()
+                    val rw = readU16BE()
+                    val rh = readU16BE()
+                    val flags = frameData[p++].toInt() and 0xFF
+                    val quality = frameData[p++].toInt() and 0xFF
+                    p += 2 // reserved
+                    val pngBytes = frameData.copyOfRange(p, totalSize)
+
+                    // Decode region PNG and apply onto persistent bitmap
+                    decodingExecutor?.submit {
+                        val regionBitmap = decodeImage(pngBytes)
+                        if (regionBitmap != null) {
+                            mainHandler.post {
+                                try {
+                                    // Ensure base bitmap exists and has server size (mutable software bitmap)
+                                    if (previousBitmap == null || previousBitmap!!.width != info.width || previousBitmap!!.height != info.height || previousBitmap!!.config != Bitmap.Config.ARGB_8888 || previousBitmap!!.isMutable == false) {
+                                        recycleBitmapSafely(previousBitmap)
+                                        previousBitmap = Bitmap.createBitmap(info.width, info.height, Bitmap.Config.ARGB_8888)
+                                    }
+                                    val base = previousBitmap!!
+
+                                    // Ensure region bitmap is software-backed; if hardware, copy
+                                    val safeRegion = if (regionBitmap.config != Bitmap.Config.ARGB_8888 || !regionBitmap.isMutable) {
+                                        regionBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                                    } else regionBitmap
+
+                                    val canvas = android.graphics.Canvas(base)
+                                    canvas.drawBitmap(safeRegion, rx.toFloat(), ry.toFloat(), null)
+                                    ivFrame.setImageBitmap(base)
+
+                                    updateFPSCalculation()
+                                    val now2 = System.currentTimeMillis()
+                                    if (now2 - lastFrameInfoUpdate > 16) {
+                                        lastFrameInfoUpdate = now2
+                                        updateOptimizedFrameInfo(currentFrameId, frameTime, base.width, base.height, 0)
+                                    }
+                                } catch (e: Exception) {
+                                    updateFrameInfo("Delta apply error: ${e.message}")
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Full frame PNG path
+                    displayFrame(frameData, currentFrameId, frameTime, totalSize)
+                }
 
                 if (framesReceived % 30 == 0) {
                     updateStatus("Received $framesReceived PNG frames")

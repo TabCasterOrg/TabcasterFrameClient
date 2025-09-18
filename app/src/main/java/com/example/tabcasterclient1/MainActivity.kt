@@ -67,7 +67,7 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var uiTickerRunning = false
     private var lastInfoUpdateMs = 0L
     // Integers
-    val port = 23532 // This is the chosen port number. The user cannot change this.
+    var port: Int = 23532 // This is the chosen port number. The user cannot change this.
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

@@ -16,6 +16,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -30,6 +31,7 @@ import kotlin.math.log
 class MainActivity : AppCompatActivity() {
 
     private lateinit var etServerIP: TextInputLayout
+    private lateinit var etServerIPText: TextInputEditText
     // No need for a port field anymore, due to the chosen 23532 port.
     private lateinit var btnConnect: Button
     private lateinit var btnDisconnect: Button
@@ -86,6 +88,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun initializeViews() {
         etServerIP = findViewById(R.id.et_server_ip)
+        etServerIPText = findViewById(R.id.et_server_ip_text)
         btnConnect = findViewById(R.id.btn_connect)
         btnDisconnect = findViewById(R.id.btn_disconnect)
         btnFullscreen = findViewById(R.id.btn_fullscreen)
@@ -169,7 +172,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun connectToServer() {
-        val serverIP = etServerIP.editText.toString().trim() // Get the server IP form the text.
+
+        val serverIP = etServerIPText.getText().toString().trim() // Get the server IP form the text.
+        Toast.makeText(this, "Attempting to connect to $serverIP:$port", Toast.LENGTH_SHORT).show()
 
         if (serverIP.isEmpty()) {
             Toast.makeText(this, "Please enter server IP and port", Toast.LENGTH_SHORT).show()

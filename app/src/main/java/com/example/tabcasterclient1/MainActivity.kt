@@ -314,6 +314,7 @@ class MainActivity : AppCompatActivity() {
         ivFrame.scaleType = ImageView.ScaleType.MATRIX
 
         updateFullscreenButton()
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     }
 
     private fun exitFullscreen() {
@@ -337,6 +338,7 @@ class MainActivity : AppCompatActivity() {
         ivFrame.scaleType = ImageView.ScaleType.FIT_CENTER
 
         updateFullscreenButton()
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     }
 
     private fun updateFullscreenButton() {

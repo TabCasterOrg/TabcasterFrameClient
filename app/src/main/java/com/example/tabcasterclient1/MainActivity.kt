@@ -85,6 +85,10 @@ class MainActivity : AppCompatActivity() {
     // Bitmap optimization
     private var previousBitmap: Bitmap? = null
 
+    // Frame synchronization tracking
+    private var lastReceivedFrameId = -1
+    private var expectedFrameId = 0
+
     // Optimized bitmap options for hardware acceleration
     private val hardwareBitmapOptions = BitmapFactory.Options().apply {
         inMutable = true
@@ -896,6 +900,16 @@ class MainActivity : AppCompatActivity() {
                     packetsReceived = 0
                     framePackets.clear()
                     frameStartTime = System.currentTimeMillis()
+
+                    // Check for frame sequence issues
+                    if (currentFrameId != expectedFrameId) {
+                        if (currentFrameId > expectedFrameId) {
+                            updateStatus("Frame gap detected: expected $expectedFrameId, got $currentFrameId")
+                        }
+                        expectedFrameId = currentFrameId + 1
+                    } else {
+                        expectedFrameId++
+                    }
                 }
 
                 val packetData = ByteArray(header.dataSize)
@@ -978,10 +992,19 @@ class MainActivity : AppCompatActivity() {
                         if (regionBitmap != null) {
                             mainHandler.post {
                                 try {
+                                    // Validate region bounds
+                                    if (rx < 0 || ry < 0 || rw <= 0 || rh <= 0 ||
+                                        rx + rw > info.width || ry + rh > info.height) {
+                                        updateFrameInfo("Invalid delta region bounds: $rx,$ry $rw x $rh")
+                                        return@post
+                                    }
+
                                     // Ensure base bitmap exists and has server size (mutable software bitmap)
                                     if (previousBitmap == null || previousBitmap!!.width != info.width || previousBitmap!!.height != info.height || previousBitmap!!.config != Bitmap.Config.ARGB_8888 || previousBitmap!!.isMutable == false) {
                                         recycleBitmapSafely(previousBitmap)
                                         previousBitmap = Bitmap.createBitmap(info.width, info.height, Bitmap.Config.ARGB_8888)
+                                        // Clear the new bitmap to ensure it starts with a known state
+                                        previousBitmap!!.eraseColor(android.graphics.Color.BLACK)
                                     }
                                     val base = previousBitmap!!
 

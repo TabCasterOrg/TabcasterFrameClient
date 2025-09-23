@@ -88,6 +88,8 @@ class MainActivity : AppCompatActivity() {
     // Frame synchronization tracking
     private var lastReceivedFrameId = -1
     private var expectedFrameId = 0
+    private var hasValidBaseFrame = false
+    private var lastFullFrameId = -1
 
     // Optimized bitmap options for hardware acceleration
     private val hardwareBitmapOptions = BitmapFactory.Options().apply {
@@ -259,6 +261,11 @@ class MainActivity : AppCompatActivity() {
         softwareDecodeCount = 0
         totalHardwareDecodeTime = 0L
         totalSoftwareDecodeTime = 0L
+
+        // Reset frame synchronization state
+        hasValidBaseFrame = false
+        lastFullFrameId = -1
+        expectedFrameId = 0
 
         btnConnect.isEnabled = true
         btnDisconnect.isEnabled = false
@@ -587,6 +594,10 @@ class MainActivity : AppCompatActivity() {
         private var handshakeComplete = false
         private var displayReady = false
 
+        // Keyframe request mechanism
+        private var lastKeyframeRequestTime = 0L
+        private val keyframeRequestCooldown = 1000L // 1 second cooldown
+
         // Modified UDPReceiver with frame skipping logic
         private var lastFrameDisplayTime = 0L
         private val minFrameInterval = 33L // ~30 FPS max display rate
@@ -594,6 +605,24 @@ class MainActivity : AppCompatActivity() {
         fun stop() {
             running = false
             socket?.close()
+        }
+
+        private fun requestKeyframe() {
+            val now = System.currentTimeMillis()
+            if (now - lastKeyframeRequestTime < keyframeRequestCooldown) {
+                return // Rate limit keyframe requests
+            }
+
+            try {
+                val serverAddress = InetAddress.getByName(serverIP)
+                val requestData = "REQUEST_KEYFRAME".toByteArray()
+                val requestPacket = DatagramPacket(requestData, requestData.size, serverAddress, serverPort)
+                socket?.send(requestPacket)
+                lastKeyframeRequestTime = now
+                updateStatus("Requested keyframe from server")
+            } catch (e: Exception) {
+                updateStatus("Failed to request keyframe: ${e.localizedMessage}")
+            }
         }
 
         override fun run() {
@@ -999,12 +1028,21 @@ class MainActivity : AppCompatActivity() {
                                         return@post
                                     }
 
+                                    // CRITICAL FIX: Reject delta regions if we don't have a valid base frame
+                                    // This prevents applying deltas to uninitialized/black bitmaps
+                                    if (!hasValidBaseFrame) {
+                                        updateFrameInfo("Rejecting delta frame $currentFrameId - no valid base frame")
+                                        requestKeyframe()
+                                        return@post
+                                    }
+
                                     // Ensure base bitmap exists and has server size (mutable software bitmap)
                                     if (previousBitmap == null || previousBitmap!!.width != info.width || previousBitmap!!.height != info.height || previousBitmap!!.config != Bitmap.Config.ARGB_8888 || previousBitmap!!.isMutable == false) {
                                         recycleBitmapSafely(previousBitmap)
                                         previousBitmap = Bitmap.createBitmap(info.width, info.height, Bitmap.Config.ARGB_8888)
-                                        // Clear the new bitmap to ensure it starts with a known state
-                                        previousBitmap!!.eraseColor(android.graphics.Color.BLACK)
+                                        // CRITICAL FIX: DO NOT erase bitmap - this destroys previous content
+                                        // The bitmap will be properly initialized by the next full frame
+                                        updateFrameInfo("Created new base bitmap for delta regions - waiting for full frame")
                                     }
                                     val base = previousBitmap!!
 
@@ -1013,8 +1051,28 @@ class MainActivity : AppCompatActivity() {
                                         regionBitmap.copy(Bitmap.Config.ARGB_8888, false)
                                     } else regionBitmap
 
-                                    val canvas = android.graphics.Canvas(base)
-                                    canvas.drawBitmap(safeRegion, rx.toFloat(), ry.toFloat(), null)
+                                    // CRITICAL FIX: Use pixel-level replacement instead of canvas compositing
+                                    // This prevents smudging by completely replacing pixels rather than blending them
+                                    val basePixels = IntArray(base.width * base.height)
+                                    base.getPixels(basePixels, 0, base.width, 0, 0, base.width, base.height)
+
+                                    val regionPixels = IntArray(safeRegion.width * safeRegion.height)
+                                    safeRegion.getPixels(regionPixels, 0, safeRegion.width, 0, 0, safeRegion.width, safeRegion.height)
+
+                                    // Replace pixels in the delta region
+                                    for (y in 0 until safeRegion.height) {
+                                        for (x in 0 until safeRegion.width) {
+                                            val baseX = rx + x
+                                            val baseY = ry + y
+                                            if (baseX < base.width && baseY < base.height) {
+                                                val regionIndex = y * safeRegion.width + x
+                                                val baseIndex = baseY * base.width + baseX
+                                                basePixels[baseIndex] = regionPixels[regionIndex]
+                                            }
+                                        }
+                                    }
+
+                                    base.setPixels(basePixels, 0, base.width, 0, 0, base.width, base.height)
                                     ivFrame.setImageBitmap(base)
 
                                     updateFPSCalculation()
@@ -1030,7 +1088,9 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
                 } else {
-                    // Full frame PNG path
+                    // Full frame PNG path - mark as valid base frame
+                    hasValidBaseFrame = true
+                    lastFullFrameId = currentFrameId
                     displayFrame(frameData, currentFrameId, frameTime, totalSize)
                 }
 

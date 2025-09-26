@@ -1,26 +1,14 @@
 package com.example.tabcasterclient1
 
-import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
-import android.graphics.drawable.Drawable
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.util.DisplayMetrics
-import android.view.View
-import android.view.WindowManager
-import android.widget.Button
-import android.widget.EditText
-import android.widget.ImageView
-import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -30,17 +18,9 @@ import java.util.concurrent.ExecutorService
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
-    private lateinit var etServerIP: EditText
-    private lateinit var etPort: EditText
-    private lateinit var btnConnect: Button
-    private lateinit var btnDisconnect: Button
-    private lateinit var btnFullscreen: Button
-    private lateinit var tvStatus: TextView
-    private lateinit var ivFrame: ImageView
-    private lateinit var tvFrameInfo: TextView
-    private lateinit var tvResolution: TextView
+    private lateinit var uiManager: UIManager
 
     private var udpReceiver: UDPReceiver? = null
     private var executorService: ExecutorService? = null
@@ -68,18 +48,7 @@ class MainActivity : AppCompatActivity() {
     private var totalHardwareDecodeTime = 0L
     private var totalSoftwareDecodeTime = 0L
 
-    // Screen resolution info
-    private var screenWidth: Int = 0
-    private var screenHeight: Int = 0
-    private var refreshRate: Float = 60.0f
-
-    // Server resolution (might be different from client if fallback used)
-    private var serverWidth: Int = 0
-    private var serverHeight: Int = 0
-    private var serverRefreshRate: Float = 60.0f
-
-    // Fullscreen state
-    private var isFullscreen: Boolean = false
+    // Streaming state
     private var isStreaming: Boolean = false
 
     // Bitmap optimization
@@ -119,9 +88,6 @@ class MainActivity : AppCompatActivity() {
     private var fpsStartTime = 0L
     private var currentFPS = 0f
 
-    // UI update throttling
-    private var lastFrameInfoUpdate = 0L
-    private var lastStatusUpdate = 0L
 
     companion object {
         private const val DEFAULT_IP = "10.1.10.105"
@@ -132,12 +98,13 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        initializeViews()
-        // Auto-fill defaults
-        etServerIP.setText(DEFAULT_IP)
-        etPort.setText(DEFAULT_PORT.toString())
-
-        setupClickListeners()
+        // Initialize UI Manager
+        uiManager = UIManager(this)
+        uiManager.setCallbacks(this)
+        uiManager.initializeViews()
+        uiManager.setDefaultValues(DEFAULT_IP, DEFAULT_PORT)
+        uiManager.setupClickListeners()
+        uiManager.getScreenResolution()
 
         executorService = Executors.newSingleThreadExecutor()
         // Initialize single decoding thread (one thread is better for sequential frame processing)
@@ -146,93 +113,56 @@ class MainActivity : AppCompatActivity() {
         // Initialize hardware acceleration support
         initializeHardwareAcceleration()
 
-        getScreenResolution()
-
-        updateStatus("Ready")
-        updateFrameInfo("No frame data")
-        updateResolutionInfo()
-        updateFullscreenButton()
+        uiManager.updateStatus("Ready")
+        uiManager.updateFrameInfo("No frame data")
+        uiManager.updateResolutionInfo()
     }
 
-    private fun initializeViews() {
-        etServerIP = findViewById(R.id.et_server_ip)
-        etPort = findViewById(R.id.et_port)
-        btnConnect = findViewById(R.id.btn_connect)
-        btnDisconnect = findViewById(R.id.btn_disconnect)
-        btnFullscreen = findViewById(R.id.btn_fullscreen)
-        tvStatus = findViewById(R.id.tv_status)
-        ivFrame = findViewById(R.id.iv_frame)
-        tvFrameInfo = findViewById(R.id.tv_frame_info)
-        tvResolution = findViewById(R.id.tv_resolution)
+    // UIManager.UICallbacks implementation
+    override fun onConnectClicked() {
+        connectToServer()
     }
 
-    private fun setupClickListeners() {
-        btnConnect.setOnClickListener { connectToServer() }
-        btnDisconnect.setOnClickListener { disconnectFromServer() }
-        btnFullscreen.setOnClickListener { toggleFullscreen() }
+    override fun onDisconnectClicked() {
+        disconnectFromServer()
+    }
 
-        // Allow clicking on image to toggle fullscreen when streaming
-        ivFrame.setOnClickListener {
-            if (isStreaming) {
-                toggleFullscreen()
-            }
-        }
+    override fun onFullscreenToggled() {
+        uiManager.toggleFullscreen()
+    }
+
+    override fun onFrameClicked() {
+        uiManager.toggleFullscreen()
     }
 
     private fun initializeHardwareAcceleration() {
         isHardwareAccelerationSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
         if (isHardwareAccelerationSupported) {
-            updateStatus("Hardware acceleration enabled (ImageDecoder)")
+            uiManager.updateStatus("Hardware acceleration enabled (ImageDecoder)")
         } else {
-            updateStatus("Using software decoding (BitmapFactory)")
+            uiManager.updateStatus("Using software decoding (BitmapFactory)")
         }
     }
 
-    private fun getScreenResolution() {
-        val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        val display = windowManager.defaultDisplay
-        val displayMetrics = DisplayMetrics()
-
-        display.getRealMetrics(displayMetrics)
-        screenWidth = displayMetrics.widthPixels
-        screenHeight = displayMetrics.heightPixels
-        refreshRate = display.refreshRate
-
-        if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
-            if (screenWidth < screenHeight) {
-                val temp = screenWidth
-                screenWidth = screenHeight
-                screenHeight = temp
-            }
-        }
-
-        serverWidth = screenWidth
-        serverHeight = screenHeight
-        serverRefreshRate = refreshRate
-    }
 
     private fun connectToServer() {
         val defaultIP = "10.1.10.105"
         val defaultPort = 23532
 
-        val serverIP = etServerIP.text.toString().trim().ifEmpty { defaultIP }
-        val portStr = etPort.text.toString().trim().ifEmpty { defaultPort.toString() }
+        val serverIP = uiManager.getServerIP().ifEmpty { defaultIP }
+        val portStr = uiManager.getPort().ifEmpty { defaultPort.toString() }
 
         val port = try {
             portStr.toInt()
         } catch (e: NumberFormatException) {
-            Toast.makeText(this, "Invalid port number", Toast.LENGTH_SHORT).show()
+            uiManager.showToast("Invalid port number")
             return
         }
         udpReceiver = UDPReceiver(serverIP, port)
         executorService?.submit(udpReceiver)
 
-        btnConnect.isEnabled = false
-        btnDisconnect.isEnabled = true
-        etServerIP.isEnabled = false
-        etPort.isEnabled = false
-
-        updateStatus("Connecting to $serverIP:$port")
+        uiManager.setConnectionState(true)
+        uiManager.updateStatus("Connecting to $serverIP:$port")
     }
 
     private fun disconnectFromServer() {
@@ -267,157 +197,12 @@ class MainActivity : AppCompatActivity() {
         lastFullFrameId = -1
         expectedFrameId = 0
 
-        btnConnect.isEnabled = true
-        btnDisconnect.isEnabled = false
-        etServerIP.isEnabled = true
-        etPort.isEnabled = true
-
-        updateStatus("Disconnected")
-        updateFrameInfo("No frame data")
-        updateFullscreenButton()
-
-        // Reset server resolution to match client
-        serverWidth = screenWidth
-        serverHeight = screenHeight
-        serverRefreshRate = refreshRate
-        updateResolutionInfo()
-
-        // Clear the image view
-        mainHandler.post {
-            ivFrame.setImageBitmap(null)
-        }
-
-        // Exit fullscreen if active
-        if (isFullscreen) {
-            exitFullscreen()
-        }
+        uiManager.setStreamingState(false)
+        uiManager.setConnectionState(false)
+        uiManager.resetUI()
     }
 
-    private fun toggleFullscreen() {
-        if (!isStreaming) return
 
-        if (isFullscreen) {
-            exitFullscreen()
-        } else {
-            enterFullscreen()
-        }
-    }
-
-    private fun enterFullscreen() {
-        isFullscreen = true
-
-        // Hide system UI
-        val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
-        windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
-
-        // Hide all UI elements except the image
-        etServerIP.visibility = View.GONE
-        etPort.visibility = View.GONE
-        btnConnect.visibility = View.GONE
-        btnDisconnect.visibility = View.GONE
-        btnFullscreen.visibility = View.GONE
-        tvStatus.visibility = View.GONE
-        tvFrameInfo.visibility = View.GONE
-        tvResolution.visibility = View.GONE
-
-        // Make image fill screen
-        ivFrame.scaleType = ImageView.ScaleType.MATRIX
-
-        updateFullscreenButton()
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-    }
-
-    private fun exitFullscreen() {
-        isFullscreen = false
-
-        // Show system UI
-        val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
-        windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
-
-        // Show all UI elements
-        etServerIP.visibility = View.VISIBLE
-        etPort.visibility = View.VISIBLE
-        btnConnect.visibility = View.VISIBLE
-        btnDisconnect.visibility = View.VISIBLE
-        btnFullscreen.visibility = View.VISIBLE
-        tvStatus.visibility = View.VISIBLE
-        tvFrameInfo.visibility = View.VISIBLE
-        tvResolution.visibility = View.VISIBLE
-
-        // Reset image scaling
-        ivFrame.scaleType = ImageView.ScaleType.FIT_CENTER
-
-        updateFullscreenButton()
-        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-    }
-
-    private fun updateFullscreenButton() {
-        mainHandler.post {
-            btnFullscreen.isEnabled = isStreaming
-            btnFullscreen.text = if (isFullscreen) "Exit Fullscreen" else "Fullscreen"
-        }
-    }
-
-    // Throttled status updates
-    private fun updateStatus(status: String) {
-        val now = System.currentTimeMillis()
-        if (now - lastStatusUpdate > 100) { // 10fps max for status updates
-            lastStatusUpdate = now
-            mainHandler.post {
-                tvStatus.text = "Status: $status"
-            }
-        }
-    }
-
-    // Regular frame info update (for non-optimized calls)
-    private fun updateFrameInfo(info: String) {
-        mainHandler.post {
-            tvFrameInfo.text = info
-        }
-    }
-
-    // Enhanced frame info with decode timing and average decode time
-    private fun updateOptimizedFrameInfo(frameId: Int, latency: Long, width: Int, height: Int, decodeTime: Long) {
-        val fpsText = if (currentFPS > 0) String.format("%.1f", currentFPS) else "---"
-        val avgDecodeText = if (avgDecodeTime > 0) String.format("%.1f", avgDecodeTime) else "---"
-
-        // Add hardware acceleration info
-        val hwAccelText = if (isHardwareAccelerationSupported) {
-            val hwAvg = if (hardwareDecodeCount > 0) totalHardwareDecodeTime / hardwareDecodeCount else 0L
-            val swAvg = if (softwareDecodeCount > 0) totalSoftwareDecodeTime / softwareDecodeCount else 0L
-            " | HW: ${hwAvg}ms (${hardwareDecodeCount}) | SW: ${swAvg}ms (${softwareDecodeCount})"
-        } else {
-            " | SW: ${avgDecodeText}ms"
-        }
-
-        val info = "Frame: $frameId | ${width}x${height} | Net: ${latency}ms | Decode: ${decodeTime}ms (avg: ${avgDecodeText}ms) | ${fpsText} FPS$hwAccelText"
-
-        if (droppedFrames > 0) {
-            tvFrameInfo.text = "$info | Dropped: $droppedFrames"
-        } else {
-            tvFrameInfo.text = info
-        }
-    }
-
-    private fun updateResolutionInfo() {
-        mainHandler.post {
-            val resolutionText = if (serverWidth == screenWidth && serverHeight == screenHeight) {
-                "Resolution: ${screenWidth}x${screenHeight} @ ${refreshRate}Hz"
-            } else {
-                "Client: ${screenWidth}x${screenHeight} @ ${refreshRate}Hz\n" +
-                        "Server: ${serverWidth}x${serverHeight} @ ${serverRefreshRate}Hz (fallback)"
-            }
-            tvResolution.text = resolutionText
-        }
-    }
-
-    private fun updateServerResolution(width: Int, height: Int, refreshRate: Float) {
-        serverWidth = width
-        serverHeight = height
-        serverRefreshRate = refreshRate
-        updateResolutionInfo()
-    }
 
     // Hardware-accelerated image decoding using ImageDecoder (API 28+)
     private fun decodeImageHardware(pngData: ByteArray): Bitmap? {
@@ -489,14 +274,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     // Optimized frame display with background decoding and frame dropping (now PNG instead of WebP)
-    private fun displayFrame(pngData: ByteArray, frameId: Int, frameTime: Long, compressedSize: Int) {
+    private fun displayFrame(pngData: ByteArray, frameId: Int, frameTime: Long, compressedSize: Int, onSuccess: ((Boolean) -> Unit)? = null) {
         // Frame dropping: Skip if too many frames are pending decode
         if (pendingDecodes >= maxPendingFrames) {
             droppedFrames++
             if (droppedFrames % 5 == 0) {
                 // Update status with frame dropping info
-                updateStatus("Streaming ($pendingDecodes pending, dropped $droppedFrames frames)")
+                uiManager.updateStatus("Streaming ($pendingDecodes pending, dropped $droppedFrames frames)")
             }
+            onSuccess?.invoke(false)
             return
         }
 
@@ -536,27 +322,36 @@ class MainActivity : AppCompatActivity() {
                             recycleBitmapSafely(previousBitmap)
 
                             // Display new frame
-                            ivFrame.setImageBitmap(bitmap)
+                            uiManager.displayFrame(bitmap)
                             previousBitmap = bitmap
 
                             // Update FPS calculation
                             updateFPSCalculation()
 
                             // Throttled UI updates (max 60 FPS for UI)
-                            val now = System.currentTimeMillis()
-                            if (now - lastFrameInfoUpdate > 16) {
-                                lastFrameInfoUpdate = now
-                                updateOptimizedFrameInfo(frameId, frameTime, bitmap.width, bitmap.height, decodeTimeMs)
+                            if (uiManager.shouldUpdateFrameInfo()) {
+                                uiManager.updateOptimizedFrameInfo(
+                                    frameId, frameTime, bitmap.width, bitmap.height, decodeTimeMs,
+                                    currentFPS, avgDecodeTime, isHardwareAccelerationSupported,
+                                    hardwareDecodeCount, softwareDecodeCount,
+                                    totalHardwareDecodeTime, totalSoftwareDecodeTime, droppedFrames
+                                )
                             }
+
+                            // Notify success callback
+                            onSuccess?.invoke(true)
                         } catch (e: Exception) {
-                            updateFrameInfo("Error displaying frame: ${e.message}")
+                            uiManager.updateFrameInfo("Error displaying frame: ${e.message}")
+                            onSuccess?.invoke(false)
                         }
                     }
                 } else {
-                    updateFrameInfo("Failed to decode PNG frame $frameId")
+                    uiManager.updateFrameInfo("Failed to decode PNG frame $frameId")
+                    onSuccess?.invoke(false)
                 }
             } catch (e: Exception) {
-                updateFrameInfo("PNG decode error: ${e.message}")
+                uiManager.updateFrameInfo("PNG decode error: ${e.message}")
+                onSuccess?.invoke(false)
             } finally {
                 pendingDecodes--
             }
@@ -619,9 +414,9 @@ class MainActivity : AppCompatActivity() {
                 val requestPacket = DatagramPacket(requestData, requestData.size, serverAddress, serverPort)
                 socket?.send(requestPacket)
                 lastKeyframeRequestTime = now
-                updateStatus("Requested keyframe from server")
+                uiManager.updateStatus("Requested keyframe from server")
             } catch (e: Exception) {
-                updateStatus("Failed to request keyframe: ${e.localizedMessage}")
+                uiManager.updateStatus("Failed to request keyframe: ${e.localizedMessage}")
             }
         }
 
@@ -631,21 +426,21 @@ class MainActivity : AppCompatActivity() {
                 socket?.soTimeout = 10000
 
                 val serverAddress = InetAddress.getByName(serverIP)
-                updateStatus("Socket created. Starting handshake...")
+                uiManager.updateStatus("Socket created. Starting handshake...")
 
                 if (!performHandshake(serverAddress)) {
-                    updateStatus("Handshake failed")
+                    uiManager.updateStatus("Handshake failed")
                     return
                 }
 
                 if (!requestStreaming(serverAddress)) {
-                    updateStatus("Failed to start streaming")
+                    uiManager.updateStatus("Failed to start streaming")
                     return
                 }
 
                 // Streaming started successfully
                 isStreaming = true
-                updateFullscreenButton()
+                uiManager.setStreamingState(true)
 
                 val buffer = ByteArray(2048)
                 while (running) {
@@ -654,64 +449,64 @@ class MainActivity : AppCompatActivity() {
                         socket?.receive(packet)
                         processReceivedPacket(packet.data, packet.length)
                     } catch (e: SocketTimeoutException) {
-                        updateStatus("Waiting for data...")
+                        uiManager.updateStatus("Waiting for data...")
                     }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
-                updateStatus("Error: ${e.localizedMessage}")
+                uiManager.updateStatus("Error: ${e.localizedMessage}")
             } finally {
                 socket?.close()
                 isStreaming = false
-                updateFullscreenButton()
-                updateStatus("Socket closed")
+                uiManager.setStreamingState(false)
+                uiManager.updateStatus("Socket closed")
             }
         }
 
         private fun performHandshake(serverAddress: InetAddress): Boolean {
             try {
-                updateStatus("Sending HELLO...")
+                uiManager.updateStatus("Sending HELLO...")
                 if (!sendMessage(serverAddress, "HELLO")) return false
 
                 if (!waitForMessage("HELLO_ACK", 5000)) {
-                    updateStatus("Did not receive HELLO_ACK")
+                    uiManager.updateStatus("Did not receive HELLO_ACK")
                     return false
                 }
-                updateStatus("Received HELLO_ACK")
+                uiManager.updateStatus("Received HELLO_ACK")
 
-                val resolutionMsg = "RESOLUTION:$screenWidth:$screenHeight:$refreshRate"
-                updateStatus("Sending resolution: ${screenWidth}x${screenHeight}@${refreshRate}Hz")
+                val resolutionMsg = "RESOLUTION:${uiManager.getScreenWidth()}:${uiManager.getScreenHeight()}:${uiManager.getRefreshRate()}"
+                uiManager.updateStatus("Sending resolution: ${uiManager.getScreenWidth()}x${uiManager.getScreenHeight()}@${uiManager.getRefreshRate()}Hz")
                 if (!sendMessage(serverAddress, resolutionMsg)) return false
 
                 val resolutionResponse = waitForResolutionResponse(15000)
                 if (resolutionResponse == null) {
-                    updateStatus("No resolution response from server")
+                    uiManager.updateStatus("No resolution response from server")
                     return false
                 }
 
                 if (resolutionResponse == "RESOLUTION_ACK") {
-                    updateStatus("Resolution accepted by server")
+                    uiManager.updateStatus("Resolution accepted by server")
                 } else if (resolutionResponse.startsWith("RESOLUTION_CHANGED:")) {
                     handleResolutionChanged(resolutionResponse)
                 } else {
-                    updateStatus("Unexpected resolution response: $resolutionResponse")
+                    uiManager.updateStatus("Unexpected resolution response: $resolutionResponse")
                     return false
                 }
 
                 val displayReadyMsg = waitForDisplayReady(15000)
                 if (displayReadyMsg == null) {
-                    updateStatus("Display setup timeout")
+                    uiManager.updateStatus("Display setup timeout")
                     return false
                 }
 
-                updateStatus("Display ready: $displayReadyMsg")
+                uiManager.updateStatus("Display ready: $displayReadyMsg")
                 handshakeComplete = true
                 displayReady = true
 
                 return true
 
             } catch (e: Exception) {
-                updateStatus("Handshake error: ${e.localizedMessage}")
+                uiManager.updateStatus("Handshake error: ${e.localizedMessage}")
                 return false
             }
         }
@@ -729,20 +524,13 @@ class MainActivity : AppCompatActivity() {
                         val height = resolutionParts[1].toInt()
                         val refreshRate = refreshRatePart.toFloat()
 
-                        updateServerResolution(width, height, refreshRate)
-                        updateStatus("Server using fallback resolution: ${width}x${height}@${refreshRate}Hz")
-
-                        mainHandler.post {
-                            Toast.makeText(
-                                this@MainActivity,
-                                "Server using fallback resolution: ${width}x${height}@${refreshRate}Hz",
-                                Toast.LENGTH_LONG
-                            ).show()
-                        }
+                        uiManager.updateServerResolution(width, height, refreshRate)
+                        uiManager.updateStatus("Server using fallback resolution: ${width}x${height}@${refreshRate}Hz")
+                        uiManager.showToast("Server using fallback resolution: ${width}x${height}@${refreshRate}Hz", Toast.LENGTH_LONG)
                     }
                 }
             } catch (e: Exception) {
-                updateStatus("Error parsing resolution change: ${e.localizedMessage}")
+                uiManager.updateStatus("Error parsing resolution change: ${e.localizedMessage}")
             }
         }
 
@@ -763,7 +551,7 @@ class MainActivity : AppCompatActivity() {
                         receivedMessage.startsWith("RESOLUTION_CHANGED:")) {
                         return receivedMessage
                     } else if (receivedMessage.startsWith("RESOLUTION_ERROR:")) {
-                        updateStatus("Server error: $receivedMessage")
+                        uiManager.updateStatus("Server error: $receivedMessage")
                         return null
                     }
                 }
@@ -771,25 +559,25 @@ class MainActivity : AppCompatActivity() {
             } catch (e: SocketTimeoutException) {
                 return null
             } catch (e: Exception) {
-                updateStatus("Wait error: ${e.localizedMessage}")
+                uiManager.updateStatus("Wait error: ${e.localizedMessage}")
                 return null
             }
         }
 
         private fun requestStreaming(serverAddress: InetAddress): Boolean {
             try {
-                updateStatus("Requesting stream start...")
+                uiManager.updateStatus("Requesting stream start...")
                 if (!sendMessage(serverAddress, "START_STREAM")) return false
 
                 if (!waitForMessage("STREAM_STARTED", 5000)) {
-                    updateStatus("Did not receive STREAM_STARTED")
+                    uiManager.updateStatus("Did not receive STREAM_STARTED")
                     return false
                 }
-                updateStatus("Streaming started")
+                uiManager.updateStatus("Streaming started")
                 return true
 
             } catch (e: Exception) {
-                updateStatus("Stream request error: ${e.localizedMessage}")
+                uiManager.updateStatus("Stream request error: ${e.localizedMessage}")
                 return false
             }
         }
@@ -801,7 +589,7 @@ class MainActivity : AppCompatActivity() {
                 socket?.send(sendPacket)
                 true
             } catch (e: Exception) {
-                updateStatus("Send error: ${e.localizedMessage}")
+                uiManager.updateStatus("Send error: ${e.localizedMessage}")
                 false
             }
         }
@@ -822,7 +610,7 @@ class MainActivity : AppCompatActivity() {
                         return true
                     } else if (receivedMessage.startsWith("DISPLAY_ERROR:") ||
                         receivedMessage.startsWith("RESOLUTION_ERROR:")) {
-                        updateStatus("Server error: $receivedMessage")
+                        uiManager.updateStatus("Server error: $receivedMessage")
                         return false
                     }
                 }
@@ -830,7 +618,7 @@ class MainActivity : AppCompatActivity() {
             } catch (e: SocketTimeoutException) {
                 return false
             } catch (e: Exception) {
-                updateStatus("Wait error: ${e.localizedMessage}")
+                uiManager.updateStatus("Wait error: ${e.localizedMessage}")
                 return false
             }
         }
@@ -850,7 +638,7 @@ class MainActivity : AppCompatActivity() {
                     if (receivedMessage.startsWith("DISPLAY_READY:")) {
                         return receivedMessage
                     } else if (receivedMessage.startsWith("DISPLAY_ERROR:")) {
-                        updateStatus("Server error: $receivedMessage")
+                        uiManager.updateStatus("Server error: $receivedMessage")
                         return null
                     }
                 }
@@ -858,7 +646,7 @@ class MainActivity : AppCompatActivity() {
             } catch (e: SocketTimeoutException) {
                 return null
             } catch (e: Exception) {
-                updateStatus("Display ready wait error: ${e.localizedMessage}")
+                uiManager.updateStatus("Display ready wait error: ${e.localizedMessage}")
                 return null
             }
         }
@@ -877,7 +665,7 @@ class MainActivity : AppCompatActivity() {
                     handleFramePacket(data, length)
                 }
             } catch (e: Exception) {
-                updateStatus("Packet processing error: ${e.localizedMessage}")
+                uiManager.updateStatus("Packet processing error: ${e.localizedMessage}")
             }
         }
 
@@ -892,12 +680,12 @@ class MainActivity : AppCompatActivity() {
                     // Backward and forward compatible status: detect optional DELTA flag
                     val hasDelta = parts.size >= 4 && parts[3] == "DELTA"
                     if (hasDelta) {
-                        updateStatus("Frame info received: ${width}x${height} (PNG+DELTA)")
+                        uiManager.updateStatus("Frame info received: ${width}x${height} (PNG+DELTA)")
                     } else {
-                        updateStatus("Frame info received: ${width}x${height} (PNG)")
+                        uiManager.updateStatus("Frame info received: ${width}x${height} (PNG)")
                     }
                 } else {
-                    updateStatus("Invalid frame info format")
+                    uiManager.updateStatus("Invalid frame info format")
                 }
             }
         }
@@ -915,13 +703,13 @@ class MainActivity : AppCompatActivity() {
                 )
 
                 if (header.dataSize < 0 || header.dataSize > length - 16) {
-                    updateStatus("Invalid packet header")
+                    uiManager.updateStatus("Invalid packet header")
                     return
                 }
 
                 if (header.frameId != currentFrameId) {
                     if (currentFrameId >= 0 && packetsReceived > 0) {
-                        updateStatus("Frame ${currentFrameId}: ${packetsReceived}/${expectedPackets} packets")
+                        uiManager.updateStatus("Frame ${currentFrameId}: ${packetsReceived}/${expectedPackets} packets")
                     }
 
                     currentFrameId = header.frameId
@@ -933,7 +721,11 @@ class MainActivity : AppCompatActivity() {
                     // Check for frame sequence issues
                     if (currentFrameId != expectedFrameId) {
                         if (currentFrameId > expectedFrameId) {
-                            updateStatus("Frame gap detected: expected $expectedFrameId, got $currentFrameId")
+                            uiManager.updateStatus("Frame gap detected: expected $expectedFrameId, got $currentFrameId")
+                            // Request keyframe when frame gap is detected to prevent delta application to wrong base
+                            requestKeyframe()
+                            // Reset base frame validity since we may have missed frames
+                            hasValidBaseFrame = false
                         }
                         expectedFrameId = currentFrameId + 1
                     } else {
@@ -951,11 +743,11 @@ class MainActivity : AppCompatActivity() {
                     reconstructAndDisplayFrame(frameTime)
                 } else {
                     if (packetsReceived % 50 == 0) {
-                        updateStatus("Frame ${currentFrameId}: ${packetsReceived}/${expectedPackets}")
+                        uiManager.updateStatus("Frame ${currentFrameId}: ${packetsReceived}/${expectedPackets}")
                     }
                 }
             } catch (e: Exception) {
-                updateStatus("Frame packet error: ${e.localizedMessage}")
+                uiManager.updateStatus("Frame packet error: ${e.localizedMessage}")
             }
         }
 
@@ -981,13 +773,21 @@ class MainActivity : AppCompatActivity() {
                         System.arraycopy(packetData, 0, frameData, offset, packetData.size)
                         offset += packetData.size
                     } else {
-                        updateStatus("Missing packet $packetId in frame $currentFrameId")
+                        uiManager.updateStatus("Missing packet $packetId in frame $currentFrameId")
                         return
                     }
                 }
 
                 framesReceived++
                 lastFrameDisplayTime = now
+
+                // CRITICAL: Validate base frame before processing any frame
+                // This prevents case #4: delta applied to wrong base frame
+                if (!hasValidBaseFrame && currentFrameId != 0) {
+                    uiManager.updateStatus("Rejecting frame $currentFrameId - no valid base frame, requesting keyframe")
+                    requestKeyframe()
+                    return
+                }
 
                 // Detect delta region payload by magic 'DREG' prefix
                 if (totalSize >= 4 &&
@@ -997,7 +797,7 @@ class MainActivity : AppCompatActivity() {
                     frameData[3] == 'G'.code.toByte()) {
                     // Parse RegionHeader: x,y,w,h (uint16 BE), flags (u8), quality (u8), reserved (u16 BE)
                     if (totalSize < 4 + 2 + 2 + 2 + 2 + 1 + 1 + 2) {
-                        updateStatus("Delta header too small")
+                        uiManager.updateStatus("Delta header too small")
                         return
                     }
                     var p = 4
@@ -1024,14 +824,14 @@ class MainActivity : AppCompatActivity() {
                                     // Validate region bounds
                                     if (rx < 0 || ry < 0 || rw <= 0 || rh <= 0 ||
                                         rx + rw > info.width || ry + rh > info.height) {
-                                        updateFrameInfo("Invalid delta region bounds: $rx,$ry $rw x $rh")
+                                        uiManager.updateFrameInfo("Invalid delta region bounds: $rx,$ry $rw x $rh")
                                         return@post
                                     }
 
                                     // CRITICAL FIX: Reject delta regions if we don't have a valid base frame
                                     // This prevents applying deltas to uninitialized/black bitmaps
                                     if (!hasValidBaseFrame) {
-                                        updateFrameInfo("Rejecting delta frame $currentFrameId - no valid base frame")
+                                        uiManager.updateFrameInfo("Rejecting delta frame $currentFrameId - no valid base frame")
                                         requestKeyframe()
                                         return@post
                                     }
@@ -1042,7 +842,7 @@ class MainActivity : AppCompatActivity() {
                                         previousBitmap = Bitmap.createBitmap(info.width, info.height, Bitmap.Config.ARGB_8888)
                                         // CRITICAL FIX: DO NOT erase bitmap - this destroys previous content
                                         // The bitmap will be properly initialized by the next full frame
-                                        updateFrameInfo("Created new base bitmap for delta regions - waiting for full frame")
+                                        uiManager.updateFrameInfo("Created new base bitmap for delta regions - waiting for full frame")
                                     }
                                     val base = previousBitmap!!
 
@@ -1073,33 +873,39 @@ class MainActivity : AppCompatActivity() {
                                     }
 
                                     base.setPixels(basePixels, 0, base.width, 0, 0, base.width, base.height)
-                                    ivFrame.setImageBitmap(base)
+                                    uiManager.displayFrame(base)
 
                                     updateFPSCalculation()
-                                    val now2 = System.currentTimeMillis()
-                                    if (now2 - lastFrameInfoUpdate > 16) {
-                                        lastFrameInfoUpdate = now2
-                                        updateOptimizedFrameInfo(currentFrameId, frameTime, base.width, base.height, 0)
+                                    if (uiManager.shouldUpdateFrameInfo()) {
+                                        uiManager.updateOptimizedFrameInfo(
+                                            currentFrameId, frameTime, base.width, base.height, 0,
+                                            currentFPS, avgDecodeTime, isHardwareAccelerationSupported,
+                                            hardwareDecodeCount, softwareDecodeCount,
+                                            totalHardwareDecodeTime, totalSoftwareDecodeTime, droppedFrames
+                                        )
                                     }
                                 } catch (e: Exception) {
-                                    updateFrameInfo("Delta apply error: ${e.message}")
+                                    uiManager.updateFrameInfo("Delta apply error: ${e.message}")
                                 }
                             }
                         }
                     }
                 } else {
-                    // Full frame PNG path - mark as valid base frame
-                    hasValidBaseFrame = true
-                    lastFullFrameId = currentFrameId
-                    displayFrame(frameData, currentFrameId, frameTime, totalSize)
+                    // Full frame PNG path - mark as valid base frame only after successful display
+                    displayFrame(frameData, currentFrameId, frameTime, totalSize) { success ->
+                        if (success) {
+                            hasValidBaseFrame = true
+                            lastFullFrameId = currentFrameId
+                        }
+                    }
                 }
 
                 if (framesReceived % 30 == 0) {
-                    updateStatus("Received $framesReceived PNG frames")
+                    uiManager.updateStatus("Received $framesReceived PNG frames")
                 }
 
             } catch (e: Exception) {
-                updateStatus("Frame reconstruction error: ${e.localizedMessage}")
+                uiManager.updateStatus("Frame reconstruction error: ${e.localizedMessage}")
             }
         }
     }
@@ -1116,8 +922,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onBackPressed() {
-        if (isFullscreen) {
-            exitFullscreen()
+        if (uiManager.isInFullscreen()) {
+            uiManager.toggleFullscreen()
         } else {
             super.onBackPressed()
         }

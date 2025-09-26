@@ -1,0 +1,335 @@
+package com.example.tabcasterclient1
+
+import android.content.res.Configuration
+import android.graphics.Bitmap
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.util.DisplayMetrics
+import android.view.View
+import android.view.WindowManager
+import android.widget.Button
+import android.widget.EditText
+import android.widget.ImageView
+import android.widget.TextView
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+
+class UIManager(private val activity: AppCompatActivity) {
+
+    // UI Views
+    private lateinit var etServerIP: EditText
+    private lateinit var etPort: EditText
+    private lateinit var btnConnect: Button
+    private lateinit var btnDisconnect: Button
+    private lateinit var btnFullscreen: Button
+    private lateinit var tvStatus: TextView
+    private lateinit var ivFrame: ImageView
+    private lateinit var tvFrameInfo: TextView
+    private lateinit var tvResolution: TextView
+
+    // UI State
+    private var isFullscreen: Boolean = false
+    private var isStreaming: Boolean = false
+
+    // Screen resolution info
+    private var screenWidth: Int = 0
+    private var screenHeight: Int = 0
+    private var refreshRate: Float = 60.0f
+
+    // Server resolution (might be different from client if fallback used)
+    private var serverWidth: Int = 0
+    private var serverHeight: Int = 0
+    private var serverRefreshRate: Float = 60.0f
+
+    // UI update throttling
+    private var lastFrameInfoUpdate = 0L
+    private var lastStatusUpdate = 0L
+
+    // Main thread handler for UI updates
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    // Callbacks for user interactions
+    interface UICallbacks {
+        fun onConnectClicked()
+        fun onDisconnectClicked()
+        fun onFullscreenToggled()
+        fun onFrameClicked()
+    }
+
+    private var callbacks: UICallbacks? = null
+
+    fun setCallbacks(callbacks: UICallbacks) {
+        this.callbacks = callbacks
+    }
+
+    fun initializeViews() {
+        etServerIP = activity.findViewById(R.id.et_server_ip)
+        etPort = activity.findViewById(R.id.et_port)
+        btnConnect = activity.findViewById(R.id.btn_connect)
+        btnDisconnect = activity.findViewById(R.id.btn_disconnect)
+        btnFullscreen = activity.findViewById(R.id.btn_fullscreen)
+        tvStatus = activity.findViewById(R.id.tv_status)
+        ivFrame = activity.findViewById(R.id.iv_frame)
+        tvFrameInfo = activity.findViewById(R.id.tv_frame_info)
+        tvResolution = activity.findViewById(R.id.tv_resolution)
+    }
+
+    fun setupClickListeners() {
+        btnConnect.setOnClickListener { callbacks?.onConnectClicked() }
+        btnDisconnect.setOnClickListener { callbacks?.onDisconnectClicked() }
+        btnFullscreen.setOnClickListener { callbacks?.onFullscreenToggled() }
+
+        // Allow clicking on image to toggle fullscreen when streaming
+        ivFrame.setOnClickListener {
+            if (isStreaming) {
+                callbacks?.onFrameClicked()
+            }
+        }
+    }
+
+    fun getScreenResolution() {
+        val windowManager = activity.getSystemService(WindowManager::class.java)
+        val display = windowManager.defaultDisplay
+        val displayMetrics = DisplayMetrics()
+
+        display.getRealMetrics(displayMetrics)
+        screenWidth = displayMetrics.widthPixels
+        screenHeight = displayMetrics.heightPixels
+        refreshRate = display.refreshRate
+
+        if (activity.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            if (screenWidth < screenHeight) {
+                val temp = screenWidth
+                screenWidth = screenHeight
+                screenHeight = temp
+            }
+        }
+
+        serverWidth = screenWidth
+        serverHeight = screenHeight
+        serverRefreshRate = refreshRate
+    }
+
+    fun getScreenWidth(): Int = screenWidth
+    fun getScreenHeight(): Int = screenHeight
+    fun getRefreshRate(): Float = refreshRate
+
+    fun setStreamingState(streaming: Boolean) {
+        isStreaming = streaming
+        updateFullscreenButton()
+    }
+
+    fun setConnectionState(connected: Boolean) {
+        mainHandler.post {
+            btnConnect.isEnabled = !connected
+            btnDisconnect.isEnabled = connected
+            etServerIP.isEnabled = !connected
+            etPort.isEnabled = !connected
+        }
+    }
+
+    fun getServerIP(): String = etServerIP.text.toString().trim()
+    fun getPort(): String = etPort.text.toString().trim()
+
+    fun setDefaultValues(defaultIP: String, defaultPort: Int) {
+        etServerIP.setText(defaultIP)
+        etPort.setText(defaultPort.toString())
+    }
+
+    fun toggleFullscreen() {
+        if (!isStreaming) return
+
+        if (isFullscreen) {
+            exitFullscreen()
+        } else {
+            enterFullscreen()
+        }
+    }
+
+    private fun enterFullscreen() {
+        isFullscreen = true
+
+        // Hide system UI
+        val windowInsetsController = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
+        windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
+
+        // Hide all UI elements except the image
+        etServerIP.visibility = View.GONE
+        etPort.visibility = View.GONE
+        btnConnect.visibility = View.GONE
+        btnDisconnect.visibility = View.GONE
+        btnFullscreen.visibility = View.GONE
+        tvStatus.visibility = View.GONE
+        tvFrameInfo.visibility = View.GONE
+        tvResolution.visibility = View.GONE
+
+        // Make image fill screen
+        ivFrame.scaleType = ImageView.ScaleType.MATRIX
+
+        updateFullscreenButton()
+        activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    private fun exitFullscreen() {
+        isFullscreen = false
+
+        // Show system UI
+        val windowInsetsController = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
+        windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
+
+        // Show all UI elements
+        etServerIP.visibility = View.VISIBLE
+        etPort.visibility = View.VISIBLE
+        btnConnect.visibility = View.VISIBLE
+        btnDisconnect.visibility = View.VISIBLE
+        btnFullscreen.visibility = View.VISIBLE
+        tvStatus.visibility = View.VISIBLE
+        tvFrameInfo.visibility = View.VISIBLE
+        tvResolution.visibility = View.VISIBLE
+
+        // Reset image scaling
+        ivFrame.scaleType = ImageView.ScaleType.FIT_CENTER
+
+        updateFullscreenButton()
+        activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    private fun updateFullscreenButton() {
+        mainHandler.post {
+            btnFullscreen.isEnabled = isStreaming
+            btnFullscreen.text = if (isFullscreen) "Exit Fullscreen" else "Fullscreen"
+        }
+    }
+
+    fun isInFullscreen(): Boolean = isFullscreen
+
+    // Throttled status updates
+    fun updateStatus(status: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastStatusUpdate > 100) { // 10fps max for status updates
+            lastStatusUpdate = now
+            mainHandler.post {
+                tvStatus.text = "Status: $status"
+            }
+        }
+    }
+
+    // Regular frame info update (for non-optimized calls)
+    fun updateFrameInfo(info: String) {
+        mainHandler.post {
+            tvFrameInfo.text = info
+        }
+    }
+
+    // Enhanced frame info with decode timing and average decode time
+    fun updateOptimizedFrameInfo(
+        frameId: Int,
+        latency: Long,
+        width: Int,
+        height: Int,
+        decodeTime: Long,
+        currentFPS: Float,
+        avgDecodeTime: Float,
+        isHardwareAccelerationSupported: Boolean,
+        hardwareDecodeCount: Int,
+        softwareDecodeCount: Int,
+        totalHardwareDecodeTime: Long,
+        totalSoftwareDecodeTime: Long,
+        droppedFrames: Int
+    ) {
+        val fpsText = if (currentFPS > 0) String.format("%.1f", currentFPS) else "---"
+        val avgDecodeText = if (avgDecodeTime > 0) String.format("%.1f", avgDecodeTime) else "---"
+
+        // Add hardware acceleration info
+        val hwAccelText = if (isHardwareAccelerationSupported) {
+            val hwAvg = if (hardwareDecodeCount > 0) totalHardwareDecodeTime / hardwareDecodeCount else 0L
+            val swAvg = if (softwareDecodeCount > 0) totalSoftwareDecodeTime / softwareDecodeCount else 0L
+            " | HW: ${hwAvg}ms (${hardwareDecodeCount}) | SW: ${swAvg}ms (${softwareDecodeCount})"
+        } else {
+            " | SW: ${avgDecodeText}ms"
+        }
+
+        val info = "Frame: $frameId | ${width}x${height} | Net: ${latency}ms | Decode: ${decodeTime}ms (avg: ${avgDecodeText}ms) | ${fpsText} FPS$hwAccelText"
+
+        if (droppedFrames > 0) {
+            tvFrameInfo.text = "$info | Dropped: $droppedFrames"
+        } else {
+            tvFrameInfo.text = info
+        }
+    }
+
+    fun updateResolutionInfo() {
+        mainHandler.post {
+            val resolutionText = if (serverWidth == screenWidth && serverHeight == screenHeight) {
+                "Resolution: ${screenWidth}x${screenHeight} @ ${refreshRate}Hz"
+            } else {
+                "Client: ${screenWidth}x${screenHeight} @ ${refreshRate}Hz\n" +
+                        "Server: ${serverWidth}x${serverHeight} @ ${serverRefreshRate}Hz (fallback)"
+            }
+            tvResolution.text = resolutionText
+        }
+    }
+
+    fun updateServerResolution(width: Int, height: Int, refreshRate: Float) {
+        serverWidth = width
+        serverHeight = height
+        serverRefreshRate = refreshRate
+        updateResolutionInfo()
+    }
+
+    fun displayFrame(bitmap: Bitmap) {
+        mainHandler.post {
+            ivFrame.setImageBitmap(bitmap)
+        }
+    }
+
+    fun clearFrame() {
+        mainHandler.post {
+            ivFrame.setImageBitmap(null)
+        }
+    }
+
+    fun showToast(message: String, duration: Int = Toast.LENGTH_SHORT) {
+        mainHandler.post {
+            Toast.makeText(activity, message, duration).show()
+        }
+    }
+
+    fun shouldUpdateFrameInfo(): Boolean {
+        val now = System.currentTimeMillis()
+        return if (now - lastFrameInfoUpdate > 16) {
+            lastFrameInfoUpdate = now
+            true
+        } else {
+            false
+        }
+    }
+
+    fun resetUI() {
+        isStreaming = false
+        isFullscreen = false
+
+        setConnectionState(false)
+        updateStatus("Ready")
+        updateFrameInfo("No frame data")
+        updateFullscreenButton()
+
+        // Reset server resolution to match client
+        serverWidth = screenWidth
+        serverHeight = screenHeight
+        serverRefreshRate = refreshRate
+        updateResolutionInfo()
+
+        clearFrame()
+
+        // Exit fullscreen if active
+        if (isFullscreen) {
+            exitFullscreen()
+        }
+    }
+}

@@ -989,12 +989,20 @@ class MainActivity : AppCompatActivity() {
                 framesReceived++
                 lastFrameDisplayTime = now
 
-                // Detect delta region payload by magic 'DREG' prefix
-                if (totalSize >= 4 &&
-                    frameData[0] == 'D'.code.toByte() &&
-                    frameData[1] == 'R'.code.toByte() &&
-                    frameData[2] == 'E'.code.toByte() &&
-                    frameData[3] == 'G'.code.toByte()) {
+                // Detect delta region payload by magic prefix
+                val isDeltaRegion = totalSize >= 4 &&
+                        frameData[0] == 'D'.code.toByte() &&
+                        frameData[1] == 'R'.code.toByte() &&
+                        frameData[2] == 'E'.code.toByte() &&
+                        frameData[3] == 'G'.code.toByte()
+
+                val isRestoreRegion = totalSize >= 4 &&
+                        frameData[0] == 'R'.code.toByte() &&
+                        frameData[1] == 'S'.code.toByte() &&
+                        frameData[2] == 'T'.code.toByte() &&
+                        frameData[3] == 'R'.code.toByte()
+
+                if (isDeltaRegion || isRestoreRegion) {
                     // Parse RegionHeader: x,y,w,h (uint16 BE), flags (u8), quality (u8), reserved (u16 BE)
                     if (totalSize < 4 + 2 + 2 + 2 + 2 + 1 + 1 + 2) {
                         updateStatus("Delta header too small")
@@ -1024,14 +1032,14 @@ class MainActivity : AppCompatActivity() {
                                     // Validate region bounds
                                     if (rx < 0 || ry < 0 || rw <= 0 || rh <= 0 ||
                                         rx + rw > info.width || ry + rh > info.height) {
-                                        updateFrameInfo("Invalid delta region bounds: $rx,$ry $rw x $rh")
+                                        updateFrameInfo("Invalid region bounds: $rx,$ry $rw x $rh")
                                         return@post
                                     }
 
-                                    // CRITICAL FIX: Reject delta regions if we don't have a valid base frame
+                                    // CRITICAL FIX: Reject regions if we don't have a valid base frame
                                     // This prevents applying deltas to uninitialized/black bitmaps
                                     if (!hasValidBaseFrame) {
-                                        updateFrameInfo("Rejecting delta frame $currentFrameId - no valid base frame")
+                                        updateFrameInfo("Rejecting ${if (isRestoreRegion) "restore" else "delta"} frame $currentFrameId - no valid base frame")
                                         requestKeyframe()
                                         return@post
                                     }
@@ -1059,15 +1067,33 @@ class MainActivity : AppCompatActivity() {
                                     val regionPixels = IntArray(safeRegion.width * safeRegion.height)
                                     safeRegion.getPixels(regionPixels, 0, safeRegion.width, 0, 0, safeRegion.width, safeRegion.height)
 
-                                    // Replace pixels in the delta region
-                                    for (y in 0 until safeRegion.height) {
-                                        for (x in 0 until safeRegion.width) {
-                                            val baseX = rx + x
-                                            val baseY = ry + y
-                                            if (baseX < base.width && baseY < base.height) {
-                                                val regionIndex = y * safeRegion.width + x
-                                                val baseIndex = baseY * base.width + baseX
-                                                basePixels[baseIndex] = regionPixels[regionIndex]
+                                    // Apply region based on type
+                                    if (isRestoreRegion) {
+                                        // RESTORE region: Apply background restoration
+                                        updateFrameInfo("Applying restore region: $rx,$ry $rw x $rh")
+                                        for (y in 0 until safeRegion.height) {
+                                            for (x in 0 until safeRegion.width) {
+                                                val baseX = rx + x
+                                                val baseY = ry + y
+                                                if (baseX < base.width && baseY < base.height) {
+                                                    val regionIndex = y * safeRegion.width + x
+                                                    val baseIndex = baseY * base.width + baseX
+                                                    basePixels[baseIndex] = regionPixels[regionIndex]
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        // UPDATE region: Apply new content (existing behavior)
+                                        updateFrameInfo("Applying delta region: $rx,$ry $rw x $rh")
+                                        for (y in 0 until safeRegion.height) {
+                                            for (x in 0 until safeRegion.width) {
+                                                val baseX = rx + x
+                                                val baseY = ry + y
+                                                if (baseX < base.width && baseY < base.height) {
+                                                    val regionIndex = y * safeRegion.width + x
+                                                    val baseIndex = baseY * base.width + baseX
+                                                    basePixels[baseIndex] = regionPixels[regionIndex]
+                                                }
                                             }
                                         }
                                     }

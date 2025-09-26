@@ -51,7 +51,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     // Streaming state
     private var isStreaming: Boolean = false
 
-    // Bitmap optimization
+    // Bitmap optimization - CRITICAL: Keep bitmap reference in MainActivity
     private var previousBitmap: Bitmap? = null
 
     // Frame synchronization tracking
@@ -87,7 +87,6 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     private var frameCount = 0
     private var fpsStartTime = 0L
     private var currentFPS = 0f
-
 
     companion object {
         private const val DEFAULT_IP = "10.1.10.105"
@@ -128,11 +127,15 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     }
 
     override fun onFullscreenToggled() {
-        uiManager.toggleFullscreen()
+        if (isStreaming) {
+            uiManager.toggleFullscreen()
+        }
     }
 
     override fun onFrameClicked() {
-        uiManager.toggleFullscreen()
+        if (isStreaming) {
+            uiManager.toggleFullscreen()
+        }
     }
 
     private fun initializeHardwareAcceleration() {
@@ -144,7 +147,6 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         }
     }
 
-
     private fun connectToServer() {
         val defaultIP = "10.1.10.105"
         val defaultPort = 23532
@@ -155,7 +157,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         val port = try {
             portStr.toInt()
         } catch (e: NumberFormatException) {
-            uiManager.showToast("Invalid port number")
+            Toast.makeText(this, "Invalid port number", Toast.LENGTH_SHORT).show()
             return
         }
         udpReceiver = UDPReceiver(serverIP, port)
@@ -170,9 +172,12 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         udpReceiver = null
         isStreaming = false
 
-        // Clean up bitmap
-        recycleBitmapSafely(previousBitmap)
-        previousBitmap = null
+        // Clean up bitmap - CRITICAL: Do this on main thread
+        mainHandler.post {
+            recycleBitmapSafely(previousBitmap)
+            previousBitmap = null
+            uiManager.clearFrame()
+        }
 
         // Reset FPS tracking
         currentFPS = 0f
@@ -201,8 +206,6 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         uiManager.setConnectionState(false)
         uiManager.resetUI()
     }
-
-
 
     // Hardware-accelerated image decoding using ImageDecoder (API 28+)
     private fun decodeImageHardware(pngData: ByteArray): Bitmap? {
@@ -273,7 +276,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         }
     }
 
-    // Optimized frame display with background decoding and frame dropping (now PNG instead of WebP)
+    // CRITICAL FIX: Ensure all bitmap operations happen on main thread
     private fun displayFrame(pngData: ByteArray, frameId: Int, frameTime: Long, compressedSize: Int, onSuccess: ((Boolean) -> Unit)? = null) {
         // Frame dropping: Skip if too many frames are pending decode
         if (pendingDecodes >= maxPendingFrames) {
@@ -315,7 +318,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                 }
 
                 if (bitmap != null) {
-                    // Only UI updates happen on main thread
+                    // CRITICAL: All bitmap operations must happen on main thread
                     mainHandler.post {
                         try {
                             // Recycle previous bitmap to prevent memory leaks
@@ -526,7 +529,14 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
                         uiManager.updateServerResolution(width, height, refreshRate)
                         uiManager.updateStatus("Server using fallback resolution: ${width}x${height}@${refreshRate}Hz")
-                        uiManager.showToast("Server using fallback resolution: ${width}x${height}@${refreshRate}Hz", Toast.LENGTH_LONG)
+
+                        mainHandler.post {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Server using fallback resolution: ${width}x${height}@${refreshRate}Hz",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -815,79 +825,88 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                     p += 2 // reserved
                     val pngBytes = frameData.copyOfRange(p, totalSize)
 
-                    // Decode region PNG and apply onto persistent bitmap
-                    decodingExecutor?.submit {
-                        val regionBitmap = decodeImage(pngBytes)
-                        if (regionBitmap != null) {
-                            mainHandler.post {
-                                try {
-                                    // Validate region bounds
-                                    if (rx < 0 || ry < 0 || rw <= 0 || rh <= 0 ||
-                                        rx + rw > info.width || ry + rh > info.height) {
-                                        uiManager.updateFrameInfo("Invalid delta region bounds: $rx,$ry $rw x $rh")
-                                        return@post
-                                    }
+                    // CRITICAL: All delta processing must happen on main thread
+                    mainHandler.post {
+                        try {
+                            // Validate region bounds
+                            if (rx < 0 || ry < 0 || rw <= 0 || rh <= 0 ||
+                                rx + rw > info.width || ry + rh > info.height) {
+                                uiManager.updateFrameInfo("Invalid delta region bounds: $rx,$ry $rw x $rh")
+                                return@post
+                            }
 
-                                    // CRITICAL FIX: Reject delta regions if we don't have a valid base frame
-                                    // This prevents applying deltas to uninitialized/black bitmaps
-                                    if (!hasValidBaseFrame) {
-                                        uiManager.updateFrameInfo("Rejecting delta frame $currentFrameId - no valid base frame")
-                                        requestKeyframe()
-                                        return@post
-                                    }
+                            // CRITICAL FIX: Reject delta regions if we don't have a valid base frame
+                            if (!hasValidBaseFrame) {
+                                uiManager.updateFrameInfo("Rejecting delta frame $currentFrameId - no valid base frame")
+                                requestKeyframe()
+                                return@post
+                            }
 
-                                    // Ensure base bitmap exists and has server size (mutable software bitmap)
-                                    if (previousBitmap == null || previousBitmap!!.width != info.width || previousBitmap!!.height != info.height || previousBitmap!!.config != Bitmap.Config.ARGB_8888 || previousBitmap!!.isMutable == false) {
-                                        recycleBitmapSafely(previousBitmap)
-                                        previousBitmap = Bitmap.createBitmap(info.width, info.height, Bitmap.Config.ARGB_8888)
-                                        // CRITICAL FIX: DO NOT erase bitmap - this destroys previous content
-                                        // The bitmap will be properly initialized by the next full frame
-                                        uiManager.updateFrameInfo("Created new base bitmap for delta regions - waiting for full frame")
-                                    }
-                                    val base = previousBitmap!!
+                            // Ensure base bitmap exists and has server size (mutable software bitmap)
+                            if (previousBitmap == null ||
+                                previousBitmap!!.width != info.width ||
+                                previousBitmap!!.height != info.height ||
+                                previousBitmap!!.config != Bitmap.Config.ARGB_8888 ||
+                                !previousBitmap!!.isMutable) {
+                                recycleBitmapSafely(previousBitmap)
+                                previousBitmap = Bitmap.createBitmap(info.width, info.height, Bitmap.Config.ARGB_8888)
+                                uiManager.updateFrameInfo("Created new base bitmap for delta regions - waiting for full frame")
+                                return@post
+                            }
 
-                                    // Ensure region bitmap is software-backed; if hardware, copy
-                                    val safeRegion = if (regionBitmap.config != Bitmap.Config.ARGB_8888 || !regionBitmap.isMutable) {
-                                        regionBitmap.copy(Bitmap.Config.ARGB_8888, false)
-                                    } else regionBitmap
+                            val base = previousBitmap!!
 
-                                    // CRITICAL FIX: Use pixel-level replacement instead of canvas compositing
-                                    // This prevents smudging by completely replacing pixels rather than blending them
-                                    val basePixels = IntArray(base.width * base.height)
-                                    base.getPixels(basePixels, 0, base.width, 0, 0, base.width, base.height)
+                            // Decode region on background thread, then apply on main thread
+                            decodingExecutor?.submit {
+                                val regionBitmap = decodeImage(pngBytes)
+                                if (regionBitmap != null) {
+                                    mainHandler.post {
+                                        try {
+                                            // Ensure region bitmap is software-backed
+                                            val safeRegion = if (regionBitmap.config != Bitmap.Config.ARGB_8888 || !regionBitmap.isMutable) {
+                                                regionBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                                            } else regionBitmap
 
-                                    val regionPixels = IntArray(safeRegion.width * safeRegion.height)
-                                    safeRegion.getPixels(regionPixels, 0, safeRegion.width, 0, 0, safeRegion.width, safeRegion.height)
+                                            // CRITICAL FIX: Use pixel-level replacement instead of canvas compositing
+                                            val basePixels = IntArray(base.width * base.height)
+                                            base.getPixels(basePixels, 0, base.width, 0, 0, base.width, base.height)
 
-                                    // Replace pixels in the delta region
-                                    for (y in 0 until safeRegion.height) {
-                                        for (x in 0 until safeRegion.width) {
-                                            val baseX = rx + x
-                                            val baseY = ry + y
-                                            if (baseX < base.width && baseY < base.height) {
-                                                val regionIndex = y * safeRegion.width + x
-                                                val baseIndex = baseY * base.width + baseX
-                                                basePixels[baseIndex] = regionPixels[regionIndex]
+                                            val regionPixels = IntArray(safeRegion.width * safeRegion.height)
+                                            safeRegion.getPixels(regionPixels, 0, safeRegion.width, 0, 0, safeRegion.width, safeRegion.height)
+
+                                            // Replace pixels in the delta region
+                                            for (y in 0 until safeRegion.height) {
+                                                for (x in 0 until safeRegion.width) {
+                                                    val baseX = rx + x
+                                                    val baseY = ry + y
+                                                    if (baseX < base.width && baseY < base.height) {
+                                                        val regionIndex = y * safeRegion.width + x
+                                                        val baseIndex = baseY * base.width + baseX
+                                                        basePixels[baseIndex] = regionPixels[regionIndex]
+                                                    }
+                                                }
                                             }
+
+                                            base.setPixels(basePixels, 0, base.width, 0, 0, base.width, base.height)
+                                            uiManager.displayFrame(base)
+
+                                            updateFPSCalculation()
+                                            if (uiManager.shouldUpdateFrameInfo()) {
+                                                uiManager.updateOptimizedFrameInfo(
+                                                    currentFrameId, frameTime, base.width, base.height, 0,
+                                                    currentFPS, avgDecodeTime, isHardwareAccelerationSupported,
+                                                    hardwareDecodeCount, softwareDecodeCount,
+                                                    totalHardwareDecodeTime, totalSoftwareDecodeTime, droppedFrames
+                                                )
+                                            }
+                                        } catch (e: Exception) {
+                                            uiManager.updateFrameInfo("Delta apply error: ${e.message}")
                                         }
                                     }
-
-                                    base.setPixels(basePixels, 0, base.width, 0, 0, base.width, base.height)
-                                    uiManager.displayFrame(base)
-
-                                    updateFPSCalculation()
-                                    if (uiManager.shouldUpdateFrameInfo()) {
-                                        uiManager.updateOptimizedFrameInfo(
-                                            currentFrameId, frameTime, base.width, base.height, 0,
-                                            currentFPS, avgDecodeTime, isHardwareAccelerationSupported,
-                                            hardwareDecodeCount, softwareDecodeCount,
-                                            totalHardwareDecodeTime, totalSoftwareDecodeTime, droppedFrames
-                                        )
-                                    }
-                                } catch (e: Exception) {
-                                    uiManager.updateFrameInfo("Delta apply error: ${e.message}")
                                 }
                             }
+                        } catch (e: Exception) {
+                            uiManager.updateFrameInfo("Delta processing error: ${e.message}")
                         }
                     }
                 } else {
@@ -912,8 +931,13 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
     override fun onDestroy() {
         super.onDestroy()
-        recycleBitmapSafely(previousBitmap)
-        previousBitmap = null
+
+        // Clean up on main thread
+        mainHandler.post {
+            recycleBitmapSafely(previousBitmap)
+            previousBitmap = null
+        }
+
         disconnectFromServer()
 
         // Shutdown decoding executor

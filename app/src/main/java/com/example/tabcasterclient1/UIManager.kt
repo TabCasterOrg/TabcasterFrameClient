@@ -1,5 +1,6 @@
 package com.example.tabcasterclient1
 
+import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.os.Build
@@ -92,7 +93,7 @@ class UIManager(private val activity: AppCompatActivity) {
     }
 
     fun getScreenResolution() {
-        val windowManager = activity.getSystemService(WindowManager::class.java)
+        val windowManager = activity.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val display = windowManager.defaultDisplay
         val displayMetrics = DisplayMetrics()
 
@@ -124,11 +125,19 @@ class UIManager(private val activity: AppCompatActivity) {
     }
 
     fun setConnectionState(connected: Boolean) {
-        mainHandler.post {
+        // Ensure UI updates happen on main thread
+        if (Looper.myLooper() == Looper.getMainLooper()) {
             btnConnect.isEnabled = !connected
             btnDisconnect.isEnabled = connected
             etServerIP.isEnabled = !connected
             etPort.isEnabled = !connected
+        } else {
+            mainHandler.post {
+                btnConnect.isEnabled = !connected
+                btnDisconnect.isEnabled = connected
+                etServerIP.isEnabled = !connected
+                etPort.isEnabled = !connected
+            }
         }
     }
 
@@ -200,9 +209,15 @@ class UIManager(private val activity: AppCompatActivity) {
     }
 
     private fun updateFullscreenButton() {
-        mainHandler.post {
+        // Ensure UI updates happen on main thread
+        if (Looper.myLooper() == Looper.getMainLooper()) {
             btnFullscreen.isEnabled = isStreaming
             btnFullscreen.text = if (isFullscreen) "Exit Fullscreen" else "Fullscreen"
+        } else {
+            mainHandler.post {
+                btnFullscreen.isEnabled = isStreaming
+                btnFullscreen.text = if (isFullscreen) "Exit Fullscreen" else "Fullscreen"
+            }
         }
     }
 
@@ -213,16 +228,24 @@ class UIManager(private val activity: AppCompatActivity) {
         val now = System.currentTimeMillis()
         if (now - lastStatusUpdate > 100) { // 10fps max for status updates
             lastStatusUpdate = now
-            mainHandler.post {
+            if (Looper.myLooper() == Looper.getMainLooper()) {
                 tvStatus.text = "Status: $status"
+            } else {
+                mainHandler.post {
+                    tvStatus.text = "Status: $status"
+                }
             }
         }
     }
 
     // Regular frame info update (for non-optimized calls)
     fun updateFrameInfo(info: String) {
-        mainHandler.post {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
             tvFrameInfo.text = info
+        } else {
+            mainHandler.post {
+                tvFrameInfo.text = info
+            }
         }
     }
 
@@ -256,22 +279,36 @@ class UIManager(private val activity: AppCompatActivity) {
 
         val info = "Frame: $frameId | ${width}x${height} | Net: ${latency}ms | Decode: ${decodeTime}ms (avg: ${avgDecodeText}ms) | ${fpsText} FPS$hwAccelText"
 
-        if (droppedFrames > 0) {
-            tvFrameInfo.text = "$info | Dropped: $droppedFrames"
+        val finalInfo = if (droppedFrames > 0) {
+            "$info | Dropped: $droppedFrames"
         } else {
-            tvFrameInfo.text = info
+            info
+        }
+
+        // Ensure UI updates happen on main thread
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            tvFrameInfo.text = finalInfo
+        } else {
+            mainHandler.post {
+                tvFrameInfo.text = finalInfo
+            }
         }
     }
 
     fun updateResolutionInfo() {
-        mainHandler.post {
-            val resolutionText = if (serverWidth == screenWidth && serverHeight == screenHeight) {
-                "Resolution: ${screenWidth}x${screenHeight} @ ${refreshRate}Hz"
-            } else {
-                "Client: ${screenWidth}x${screenHeight} @ ${refreshRate}Hz\n" +
-                        "Server: ${serverWidth}x${serverHeight} @ ${serverRefreshRate}Hz (fallback)"
-            }
+        val resolutionText = if (serverWidth == screenWidth && serverHeight == screenHeight) {
+            "Resolution: ${screenWidth}x${screenHeight} @ ${refreshRate}Hz"
+        } else {
+            "Client: ${screenWidth}x${screenHeight} @ ${refreshRate}Hz\n" +
+                    "Server: ${serverWidth}x${serverHeight} @ ${serverRefreshRate}Hz (fallback)"
+        }
+
+        if (Looper.myLooper() == Looper.getMainLooper()) {
             tvResolution.text = resolutionText
+        } else {
+            mainHandler.post {
+                tvResolution.text = resolutionText
+            }
         }
     }
 
@@ -282,21 +319,32 @@ class UIManager(private val activity: AppCompatActivity) {
         updateResolutionInfo()
     }
 
+    // CRITICAL: This method must ONLY be called from the main thread
+    // Bitmap operations are not thread-safe
     fun displayFrame(bitmap: Bitmap) {
-        mainHandler.post {
-            ivFrame.setImageBitmap(bitmap)
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            throw IllegalStateException("displayFrame() must be called from the main thread!")
         }
+        ivFrame.setImageBitmap(bitmap)
     }
 
     fun clearFrame() {
-        mainHandler.post {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
             ivFrame.setImageBitmap(null)
+        } else {
+            mainHandler.post {
+                ivFrame.setImageBitmap(null)
+            }
         }
     }
 
     fun showToast(message: String, duration: Int = Toast.LENGTH_SHORT) {
-        mainHandler.post {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
             Toast.makeText(activity, message, duration).show()
+        } else {
+            mainHandler.post {
+                Toast.makeText(activity, message, duration).show()
+            }
         }
     }
 
@@ -311,25 +359,32 @@ class UIManager(private val activity: AppCompatActivity) {
     }
 
     fun resetUI() {
-        isStreaming = false
-        isFullscreen = false
+        val resetTask = {
+            isStreaming = false
 
-        setConnectionState(false)
-        updateStatus("Ready")
-        updateFrameInfo("No frame data")
-        updateFullscreenButton()
+            setConnectionState(false)
+            updateStatus("Disconnected")
+            updateFrameInfo("No frame data")
+            updateFullscreenButton()
 
-        // Reset server resolution to match client
-        serverWidth = screenWidth
-        serverHeight = screenHeight
-        serverRefreshRate = refreshRate
-        updateResolutionInfo()
+            // Reset server resolution to match client
+            serverWidth = screenWidth
+            serverHeight = screenHeight
+            serverRefreshRate = refreshRate
+            updateResolutionInfo()
 
-        clearFrame()
+            clearFrame()
 
-        // Exit fullscreen if active
-        if (isFullscreen) {
-            exitFullscreen()
+            // Exit fullscreen if active
+            if (isFullscreen) {
+                exitFullscreen()
+            }
+        }
+
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            resetTask()
+        } else {
+            mainHandler.post { resetTask() }
         }
     }
 }

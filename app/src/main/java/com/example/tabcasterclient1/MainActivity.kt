@@ -152,10 +152,10 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         val defaultPort = 23532
 
         val serverIP = uiManager.getServerIP().ifEmpty { defaultIP }
-        val portStr = uiManager.getPort().ifEmpty { defaultPort.toString() }
+        val portStr = defaultPort.toString()
 
         val port = try {
-            portStr.toInt()
+            portStr.toInt() // TODO: Refactor
         } catch (e: NumberFormatException) {
             Toast.makeText(this, "Invalid port number", Toast.LENGTH_SHORT).show()
             return

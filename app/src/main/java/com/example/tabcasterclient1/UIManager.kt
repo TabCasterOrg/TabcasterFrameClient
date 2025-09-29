@@ -23,7 +23,6 @@ class UIManager(private val activity: AppCompatActivity) {
 
     // UI Views
     private lateinit var etServerIP: EditText
-    private lateinit var etPort: EditText
     private lateinit var btnConnect: Button
     private lateinit var btnDisconnect: Button
     private lateinit var btnFullscreen: Button
@@ -69,7 +68,6 @@ class UIManager(private val activity: AppCompatActivity) {
 
     fun initializeViews() {
         etServerIP = activity.findViewById(R.id.et_server_ip)
-        etPort = activity.findViewById(R.id.et_port)
         btnConnect = activity.findViewById(R.id.btn_connect)
         btnDisconnect = activity.findViewById(R.id.btn_disconnect)
         btnFullscreen = activity.findViewById(R.id.btn_fullscreen)
@@ -130,23 +128,19 @@ class UIManager(private val activity: AppCompatActivity) {
             btnConnect.isEnabled = !connected
             btnDisconnect.isEnabled = connected
             etServerIP.isEnabled = !connected
-            etPort.isEnabled = !connected
         } else {
             mainHandler.post {
                 btnConnect.isEnabled = !connected
                 btnDisconnect.isEnabled = connected
                 etServerIP.isEnabled = !connected
-                etPort.isEnabled = !connected
             }
         }
     }
 
     fun getServerIP(): String = etServerIP.text.toString().trim()
-    fun getPort(): String = etPort.text.toString().trim()
 
     fun setDefaultValues(defaultIP: String, defaultPort: Int) {
         etServerIP.setText(defaultIP)
-        etPort.setText(defaultPort.toString())
     }
 
     fun toggleFullscreen() {
@@ -169,7 +163,6 @@ class UIManager(private val activity: AppCompatActivity) {
 
         // Hide all UI elements except the image
         etServerIP.visibility = View.GONE
-        etPort.visibility = View.GONE
         btnConnect.visibility = View.GONE
         btnDisconnect.visibility = View.GONE
         btnFullscreen.visibility = View.GONE
@@ -193,7 +186,6 @@ class UIManager(private val activity: AppCompatActivity) {
 
         // Show all UI elements
         etServerIP.visibility = View.VISIBLE
-        etPort.visibility = View.VISIBLE
         btnConnect.visibility = View.VISIBLE
         btnDisconnect.visibility = View.VISIBLE
         btnFullscreen.visibility = View.VISIBLE

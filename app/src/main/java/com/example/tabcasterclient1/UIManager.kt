@@ -160,6 +160,8 @@ class UIManager(private val activity: AppCompatActivity) {
 
     fun getServerIP(): String = etServerIP.text.toString().trim()
 
+    fun serverIPIsValid(): Boolean = InetAddresses.isNumericAddress(etServerIP.text.toString())
+
     fun setDefaultValues(defaultIP: String, defaultPort: Int) {
         etServerIP.setText(defaultIP)
     }
@@ -237,8 +239,7 @@ class UIManager(private val activity: AppCompatActivity) {
     private fun updateConnectButton() {
         // Update the connection button based on what is happening.
         // First, check if the IP is valid
-        var ipIsValid = InetAddresses.isNumericAddress(etServerIP.text.toString())
-        if (ipIsValid) {
+        if (serverIPIsValid()) {
             // If it is, next we check the connection status
             if (isStreaming) {
                 btnConnect.setText("Streaming")

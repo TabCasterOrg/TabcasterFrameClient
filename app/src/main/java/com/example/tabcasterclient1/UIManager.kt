@@ -3,9 +3,12 @@ package com.example.tabcasterclient1
 import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.net.InetAddresses
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.text.Editable
+import android.text.TextWatcher
 import android.util.DisplayMetrics
 import android.view.View
 import android.view.WindowManager
@@ -18,6 +21,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.widget.addTextChangedListener
+import com.google.android.material.textfield.TextInputEditText
 
 class UIManager(private val activity: AppCompatActivity) {
 
@@ -81,6 +86,22 @@ class UIManager(private val activity: AppCompatActivity) {
         btnConnect.setOnClickListener { callbacks?.onConnectClicked() }
         btnDisconnect.setOnClickListener { callbacks?.onDisconnectClicked() }
         btnFullscreen.setOnClickListener { callbacks?.onFullscreenToggled() }
+
+        // This is for the dynamic button text on the connect button.
+        etServerIP.addTextChangedListener( object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) {
+                updateConnectButton()
+            }
+
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {
+                updateConnectButton()
+            }
+
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                updateConnectButton()
+            }
+        }
+        )
 
         // Allow clicking on image to toggle fullscreen when streaming
         ivFrame.setOnClickListener {
@@ -210,6 +231,24 @@ class UIManager(private val activity: AppCompatActivity) {
                 btnFullscreen.isEnabled = isStreaming
                 btnFullscreen.text = if (isFullscreen) "Exit Fullscreen" else "Fullscreen"
             }
+        }
+    }
+
+    private fun updateConnectButton() {
+        // Update the connection button based on what is happening.
+        // First, check if the IP is valid
+        var ipIsValid = InetAddresses.isNumericAddress(etServerIP.text.toString())
+        if (ipIsValid) {
+            // If it is, next we check the connection status
+            if (isStreaming) {
+                btnConnect.setText("Streaming")
+            }
+            else {
+                btnConnect.setText("Connect")
+            }
+        }
+        else {
+            btnConnect.setText("Help")
         }
     }
 

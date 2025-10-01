@@ -118,10 +118,9 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     }
 
     // UIManager.UICallbacks implementation
-    override fun onConnectClicked() {
+    override fun onTryConnect() {
         connectToServer()
     }
-
     override fun onDisconnectClicked() {
         disconnectFromServer()
     }

@@ -17,6 +17,7 @@ import android.widget.EditText
 import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -59,7 +60,7 @@ class UIManager(private val activity: AppCompatActivity) {
 
     // Callbacks for user interactions
     interface UICallbacks {
-        fun onConnectClicked()
+        fun onTryConnect()
         fun onDisconnectClicked()
         fun onFullscreenToggled()
         fun onFrameClicked()
@@ -83,7 +84,7 @@ class UIManager(private val activity: AppCompatActivity) {
     }
 
     fun setupClickListeners() {
-        btnConnect.setOnClickListener { callbacks?.onConnectClicked() }
+        btnConnect.setOnClickListener { onConnectClicked() }
         btnDisconnect.setOnClickListener { callbacks?.onDisconnectClicked() }
         btnFullscreen.setOnClickListener { callbacks?.onFullscreenToggled() }
 
@@ -250,6 +251,21 @@ class UIManager(private val activity: AppCompatActivity) {
         }
         else {
             btnConnect.setText("Help")
+        }
+    }
+
+    private fun onConnectClicked(){
+        if (serverIPIsValid()){
+            callbacks?.onTryConnect() // Tell the main activity to connect
+        }
+        else{
+            // This is a dialog box, to explain how to input the IP address.
+            //val builder: AlertDialog.Builder = AlertDialog.Builder(MainActivity@this)
+            //builder.setTitle("Invalid IP Address")
+            //val serverIP = etServerIP.text.toString().trim()
+            //builder.setMessage("$serverIP is not a valid IP address.\nIP Addresses usually follow the format of XXX.XXX.XX.XXX:XXXX\n\nTo retreive your IP address on Linux systems with NetworkManager installed, use `nmcli` in the Terminal to find your IP address.\nWhen a valid IP address is entered, the help button will become the connect button, and you can attempt to connect to TabCaster.")
+            //val dialog: AlertDialog = builder.create()
+            //dialog.show()
         }
     }
 

@@ -260,12 +260,12 @@ class UIManager(private val activity: AppCompatActivity) {
         }
         else{
             // This is a dialog box, to explain how to input the IP address.
-            //val builder: AlertDialog.Builder = AlertDialog.Builder(MainActivity@this)
-            //builder.setTitle("Invalid IP Address")
-            //val serverIP = etServerIP.text.toString().trim()
-            //builder.setMessage("$serverIP is not a valid IP address.\nIP Addresses usually follow the format of XXX.XXX.XX.XXX:XXXX\n\nTo retreive your IP address on Linux systems with NetworkManager installed, use `nmcli` in the Terminal to find your IP address.\nWhen a valid IP address is entered, the help button will become the connect button, and you can attempt to connect to TabCaster.")
-            //val dialog: AlertDialog = builder.create()
-            //dialog.show()
+            val builder: AlertDialog.Builder = AlertDialog.Builder(activity)
+            builder.setTitle("Invalid IP Address")
+            val serverIP = etServerIP.text.toString().trim()
+            builder.setMessage("$serverIP is not a valid IP address.\nIP Addresses usually follow the format of XXX.XXX.XX.XXX:XXXX\n\nTo retreive your IP address on Linux systems with NetworkManager installed, use `nmcli` in the Terminal to find your IP address.\nWhen a valid IP address is entered, the help button will become the connect button, and you can attempt to connect to TabCaster.")
+            val dialog: AlertDialog = builder.create()
+            dialog.show()
         }
     }
 

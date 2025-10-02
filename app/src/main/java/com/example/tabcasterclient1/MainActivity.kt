@@ -84,6 +84,16 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         private const val DEFAULT_PORT = 23532
     }
 
+    // Data class for delta operations
+    data class DeltaOperation(
+        val magic: String,
+        val rx: Int,
+        val ry: Int,
+        val rw: Int,
+        val rh: Int,
+        val pngBytes: ByteArray
+    )
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -315,6 +325,182 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
             } finally {
                 pendingDecodes--
             }
+        }
+    }
+
+    private fun processAtomicDeltaOperations(frameData: ByteArray, totalSize: Int, info: FrameInfo, currentFrameId: Int, frameTime: Long) {
+        var offset = 0
+        val operations = mutableListOf<DeltaOperation>()
+
+        // Parse all operations in the frame
+        while (offset + 8 <= totalSize) {
+            val magic = String(frameData, offset, 4)
+            offset += 4
+
+            if (magic != "CREG" && magic != "DREG") {
+                uiManager.updateFrameInfo("Invalid operation magic: $magic")
+                break
+            }
+
+            // Parse region header
+            if (offset + 12 > totalSize) break
+
+            val rx = ((frameData[offset].toInt() and 0xFF) shl 8) or (frameData[offset+1].toInt() and 0xFF)
+            val ry = ((frameData[offset+2].toInt() and 0xFF) shl 8) or (frameData[offset+3].toInt() and 0xFF)
+            val rw = ((frameData[offset+4].toInt() and 0xFF) shl 8) or (frameData[offset+5].toInt() and 0xFF)
+            val rh = ((frameData[offset+6].toInt() and 0xFF) shl 8) or (frameData[offset+7].toInt() and 0xFF)
+            offset += 8 // Skip to flags
+            val flags = frameData[offset++].toInt() and 0xFF
+            val quality = frameData[offset++].toInt() and 0xFF
+            offset += 2 // Skip reserved bytes
+
+            val pngSize = totalSize - offset
+            if (pngSize <= 0) break
+
+            // Find PNG end (or next operation)
+            var pngEnd = offset
+            var foundNextOp = false
+
+            // Look for next operation marker
+            while (pngEnd + 4 < totalSize) {
+                if ((frameData[pngEnd] == 'C'.code.toByte() && frameData[pngEnd+1] == 'R'.code.toByte() &&
+                            frameData[pngEnd+2] == 'E'.code.toByte() && frameData[pngEnd+3] == 'G'.code.toByte()) ||
+                    (frameData[pngEnd] == 'D'.code.toByte() && frameData[pngEnd+1] == 'R'.code.toByte() &&
+                            frameData[pngEnd+2] == 'E'.code.toByte() && frameData[pngEnd+3] == 'G'.code.toByte())) {
+                    foundNextOp = true
+                    break
+                }
+                pngEnd++
+            }
+
+            if (!foundNextOp) pngEnd = totalSize
+
+            val pngBytes = frameData.copyOfRange(offset, pngEnd)
+            offset = pngEnd
+
+            operations.add(DeltaOperation(magic, rx, ry, rw, rh, pngBytes))
+        }
+
+        if (operations.isEmpty()) {
+            uiManager.updateFrameInfo("No valid operations found in delta frame")
+            return
+        }
+
+        // Apply all operations ATOMICALLY on main thread
+        mainHandler.post {
+            try {
+                val base = previousBitmap ?: run {
+                    uiManager.updateFrameInfo("No base bitmap for delta operations")
+                    return@post
+                }
+
+                // Validate base bitmap dimensions
+                if (base.width != info.width || base.height != info.height) {
+                    uiManager.updateFrameInfo("Base bitmap size mismatch: ${base.width}x${base.height} vs ${info.width}x${info.height}")
+                    return@post
+                }
+
+                // Apply all operations to a temporary bitmap first
+                val tempBitmap = base.copy(Bitmap.Config.ARGB_8888, true)
+                var operationsApplied = 0
+
+                for (op in operations) {
+                    when (op.magic) {
+                        "CREG" -> applyClearOperation(tempBitmap, op, info)
+                        "DREG" -> applyDrawOperation(tempBitmap, op)
+                    }
+                    operationsApplied++
+                }
+
+                if (operationsApplied > 0) {
+                    // Atomically swap the bitmap
+                    recycleBitmapSafely(previousBitmap)
+                    previousBitmap = tempBitmap
+
+                    // Display the updated frame
+                    uiManager.displayFrame(tempBitmap)
+
+                    updateFPSCalculation()
+                    if (uiManager.shouldUpdateFrameInfo()) {
+                        uiManager.updateOptimizedFrameInfo(
+                            currentFrameId, frameTime, tempBitmap.width, tempBitmap.height, 0,
+                            currentFPS, avgDecodeTime, isHardwareAccelerationSupported,
+                            hardwareDecodeCount, softwareDecodeCount,
+                            totalHardwareDecodeTime, totalSoftwareDecodeTime, droppedFrames
+                        )
+                    }
+
+                    uiManager.updateFrameInfo("Applied $operationsApplied operations (${operations.count { it.magic == "CREG" }} clear, ${operations.count { it.magic == "DREG" }} draw)")
+                    hasValidBaseFrame = true
+                }
+            } catch (e: Exception) {
+                uiManager.updateFrameInfo("Atomic delta error: ${e.message}")
+                e.printStackTrace()
+            }
+        }
+    }
+
+    private fun applyClearOperation(bitmap: Bitmap, op: DeltaOperation, info: FrameInfo) {
+        try {
+            // Clear operation: restore region from base content
+            val clearBitmap = decodeImageSoftware(op.pngBytes)
+            if (clearBitmap != null) {
+                // Validate dimensions
+                if (clearBitmap.width == op.rw && clearBitmap.height == op.rh) {
+                    val clearPixels = IntArray(op.rw * op.rh)
+                    clearBitmap.getPixels(clearPixels, 0, op.rw, 0, 0, op.rw, op.rh)
+
+                    // Validate bounds
+                    if (op.rx >= 0 && op.ry >= 0 &&
+                        op.rx + op.rw <= bitmap.width &&
+                        op.ry + op.rh <= bitmap.height) {
+                        bitmap.setPixels(clearPixels, 0, op.rw, op.rx, op.ry, op.rw, op.rh)
+                    } else {
+                        uiManager.updateFrameInfo("Clear operation bounds error: ${op.rx},${op.ry} ${op.rw}x${op.rh}")
+                    }
+
+                    recycleBitmapSafely(clearBitmap)
+                } else {
+                    uiManager.updateFrameInfo("Clear bitmap size mismatch: ${clearBitmap.width}x${clearBitmap.height} vs ${op.rw}x${op.rh}")
+                    recycleBitmapSafely(clearBitmap)
+                }
+            } else {
+                uiManager.updateFrameInfo("Failed to decode clear operation PNG")
+            }
+        } catch (e: Exception) {
+            uiManager.updateFrameInfo("Clear operation error: ${e.message}")
+        }
+    }
+
+    private fun applyDrawOperation(bitmap: Bitmap, op: DeltaOperation) {
+        try {
+            // Draw operation: apply new content
+            val drawBitmap = decodeImageSoftware(op.pngBytes)
+            if (drawBitmap != null) {
+                // Validate dimensions
+                if (drawBitmap.width == op.rw && drawBitmap.height == op.rh) {
+                    val drawPixels = IntArray(op.rw * op.rh)
+                    drawBitmap.getPixels(drawPixels, 0, op.rw, 0, 0, op.rw, op.rh)
+
+                    // Validate bounds
+                    if (op.rx >= 0 && op.ry >= 0 &&
+                        op.rx + op.rw <= bitmap.width &&
+                        op.ry + op.rh <= bitmap.height) {
+                        bitmap.setPixels(drawPixels, 0, op.rw, op.rx, op.ry, op.rw, op.rh)
+                    } else {
+                        uiManager.updateFrameInfo("Draw operation bounds error: ${op.rx},${op.ry} ${op.rw}x${op.rh}")
+                    }
+
+                    recycleBitmapSafely(drawBitmap)
+                } else {
+                    uiManager.updateFrameInfo("Draw bitmap size mismatch: ${drawBitmap.width}x${drawBitmap.height} vs ${op.rw}x${op.rh}")
+                    recycleBitmapSafely(drawBitmap)
+                }
+            } else {
+                uiManager.updateFrameInfo("Failed to decode draw operation PNG")
+            }
+        } catch (e: Exception) {
+            uiManager.updateFrameInfo("Draw operation error: ${e.message}")
         }
     }
 
@@ -738,122 +924,14 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                 framesReceived++
                 lastFrameDisplayTime = now
 
-                // Detect delta region payload by magic 'DREG' prefix
-                if (totalSize >= 4 &&
-                    frameData[0] == 'D'.code.toByte() &&
-                    frameData[1] == 'R'.code.toByte() &&
-                    frameData[2] == 'E'.code.toByte() &&
-                    frameData[3] == 'G'.code.toByte()) {
-
-                    // Parse RegionHeader
-                    if (totalSize < 16) {
-                        uiManager.updateStatus("Delta header too small")
-                        return
-                    }
-                    var p = 4
-                    fun readU16BE(): Int {
-                        val v = ((frameData[p].toInt() and 0xFF) shl 8) or (frameData[p+1].toInt() and 0xFF)
-                        p += 2
-                        return v
-                    }
-                    val rx = readU16BE()
-                    val ry = readU16BE()
-                    val rw = readU16BE()
-                    val rh = readU16BE()
-                    val flags = frameData[p++].toInt() and 0xFF
-                    val quality = frameData[p++].toInt() and 0xFF
-                    p += 2 // reserved
-                    val pngBytes = frameData.copyOfRange(p, totalSize)
-
-                    // CRITICAL: All delta processing on main thread
-                    mainHandler.post {
-                        try {
-                            // Validate region bounds
-                            if (rx < 0 || ry < 0 || rw <= 0 || rh <= 0 ||
-                                rx + rw > info.width || ry + rh > info.height) {
-                                uiManager.updateFrameInfo("Invalid delta region: $rx,$ry ${rw}x$rh")
-                                return@post
-                            }
-
-                            // CRITICAL FIX: Ensure previousBitmap is MUTABLE SOFTWARE bitmap
-                            if (previousBitmap == null ||
-                                previousBitmap!!.width != info.width ||
-                                previousBitmap!!.height != info.height ||
-                                previousBitmap!!.config != Bitmap.Config.ARGB_8888 ||
-                                !previousBitmap!!.isMutable) {
-
-                                recycleBitmapSafely(previousBitmap)
-                                previousBitmap = Bitmap.createBitmap(info.width, info.height, Bitmap.Config.ARGB_8888)
-                                uiManager.updateFrameInfo("Created mutable base bitmap - waiting for full frame")
-                                requestKeyframe()
-                                return@post
-                            }
-
-                            if (!hasValidBaseFrame) {
-                                uiManager.updateFrameInfo("Rejecting delta - no valid base frame")
-                                requestKeyframe()
-                                return@post
-                            }
-
-                            val base = previousBitmap!!
-
-                            // Decode region on background thread
-                            decodingExecutor?.submit {
-                                // CRITICAL: Use software decoding for delta regions (must be mutable)
-                                // Add detailed logging for debugging
-                                uiManager.updateFrameInfo("Decoding delta region: ${pngBytes.size} bytes, expected ${rw}x$rh")
-
-                                val regionBitmap = try {
-                                    BitmapFactory.decodeByteArray(pngBytes, 0, pngBytes.size, softwareBitmapOptions)
-                                } catch (e: Exception) {
-                                    mainHandler.post {
-                                        uiManager.updateFrameInfo("Delta decode exception: ${e.message}, bytes: ${pngBytes.size}")
-                                    }
-                                    null
-                                }
-
-                                if (regionBitmap != null) {
-                                    mainHandler.post {
-                                        try {
-                                            // Validate region bitmap dimensions
-                                            if (regionBitmap.width != rw || regionBitmap.height != rh) {
-                                                uiManager.updateFrameInfo("Region size mismatch: ${regionBitmap.width}x${regionBitmap.height} vs ${rw}x$rh")
-                                                recycleBitmapSafely(regionBitmap)
-                                                return@post
-                                            }
-
-                                            // PIXEL-LEVEL REPLACEMENT (no blending, no canvas)
-                                            val regionPixels = IntArray(rw * rh)
-                                            regionBitmap.getPixels(regionPixels, 0, rw, 0, 0, rw, rh)
-
-                                            // Direct pixel replacement
-                                            base.setPixels(regionPixels, 0, rw, rx, ry, rw, rh)
-                                            recycleBitmapSafely(regionBitmap)
-
-                                            // Display updated base frame
-                                            uiManager.displayFrame(base)
-
-                                            updateFPSCalculation()
-                                            if (uiManager.shouldUpdateFrameInfo()) {
-                                                uiManager.updateOptimizedFrameInfo(
-                                                    currentFrameId, frameTime, base.width, base.height, 0,
-                                                    currentFPS, avgDecodeTime, isHardwareAccelerationSupported,
-                                                    hardwareDecodeCount, softwareDecodeCount,
-                                                    totalHardwareDecodeTime, totalSoftwareDecodeTime, droppedFrames
-                                                )
-                                            }
-                                        } catch (e: Exception) {
-                                            uiManager.updateFrameInfo("Delta apply error: ${e.message}")
-                                        }
-                                    }
-                                } else {
-                                    uiManager.updateFrameInfo("Failed to decode delta region")
-                                }
-                            }
-                        } catch (e: Exception) {
-                            uiManager.updateFrameInfo("Delta processing error: ${e.message}")
-                        }
-                    }
+                // Detect delta operations by magic headers (CREG or DREG)
+                if (totalSize >= 4 && (
+                            (frameData[0] == 'C'.code.toByte() && frameData[1] == 'R'.code.toByte() &&
+                                    frameData[2] == 'E'.code.toByte() && frameData[3] == 'G'.code.toByte()) ||
+                                    (frameData[0] == 'D'.code.toByte() && frameData[1] == 'R'.code.toByte() &&
+                                            frameData[2] == 'E'.code.toByte() && frameData[3] == 'G'.code.toByte())
+                            )) {
+                    processAtomicDeltaOperations(frameData, totalSize, info, currentFrameId, frameTime)
                 } else {
                     // FULL FRAME PATH
                     displayFrame(frameData, currentFrameId, frameTime, totalSize) { success ->

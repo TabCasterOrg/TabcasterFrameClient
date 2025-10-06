@@ -15,6 +15,7 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -36,6 +37,7 @@ class UIManager(private val activity: AppCompatActivity) {
     private lateinit var ivFrame: ImageView
     private lateinit var tvFrameInfo: TextView
     private lateinit var tvResolution: TextView
+    private lateinit var controlsLayout: LinearLayout
 
     // UI State
     private var isFullscreen: Boolean = false
@@ -81,6 +83,7 @@ class UIManager(private val activity: AppCompatActivity) {
         ivFrame = activity.findViewById(R.id.iv_frame)
         tvFrameInfo = activity.findViewById(R.id.tv_frame_info)
         tvResolution = activity.findViewById(R.id.tv_resolution)
+        controlsLayout = activity.findViewById(R.id.controlsLayout)
     }
 
     fun setupClickListeners() {
@@ -186,6 +189,7 @@ class UIManager(private val activity: AppCompatActivity) {
         windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
 
         // Hide all UI elements except the image
+        controlsLayout.visibility = View.GONE
         etServerIP.visibility = View.GONE
         btnConnect.visibility = View.GONE
         btnDisconnect.visibility = View.GONE
@@ -209,6 +213,7 @@ class UIManager(private val activity: AppCompatActivity) {
         windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
 
         // Show all UI elements
+        controlsLayout.visibility = View.VISIBLE
         etServerIP.visibility = View.VISIBLE
         btnConnect.visibility = View.VISIBLE
         btnDisconnect.visibility = View.VISIBLE

@@ -39,7 +39,11 @@
         android:layout_weight="1"
         android:scaleType="fitCenter"
         android:background="#000000"
-        android:contentDescription="Stream display" />
+        android:adjustViewBounds="true"
+        android:contentDescription="Stream display">
+
+
+    </ImageView>
 
     <LinearLayout
         android:id="@+id/controlsLayout"
@@ -55,7 +59,8 @@
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:orientation="horizontal">
+            android:orientation="horizontal"
+            >
 
             <!-- Server Input -->
             <com.google.android.material.textfield.TextInputLayout

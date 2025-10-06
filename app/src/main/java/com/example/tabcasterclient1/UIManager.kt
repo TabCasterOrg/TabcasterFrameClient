@@ -224,7 +224,9 @@ class UIManager(private val activity: AppCompatActivity) {
         // Show system UI
         val windowInsetsController = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
         windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
-
+        //Clear the image BEFORE changing layout to prevent recycled bitmap crash
+        val currentBitmap = (ivFrame.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
+        ivFrame.setImageDrawable(null)
         // Show all UI elements
         controlsLayout.visibility = View.VISIBLE
         etServerIP.visibility = View.VISIBLE
@@ -234,6 +236,7 @@ class UIManager(private val activity: AppCompatActivity) {
         tvStatus.visibility = View.VISIBLE
         tvFrameInfo.visibility = View.VISIBLE
         tvResolution.visibility = View.VISIBLE
+
 
         // Reset image scaling
         ivFrame.scaleType = ImageView.ScaleType.FIT_CENTER

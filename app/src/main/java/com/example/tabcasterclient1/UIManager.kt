@@ -23,6 +23,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.view.setPadding
 import androidx.core.widget.addTextChangedListener
 import com.google.android.material.textfield.TextInputEditText
 
@@ -37,7 +38,9 @@ class UIManager(private val activity: AppCompatActivity) {
     private lateinit var ivFrame: ImageView
     private lateinit var tvFrameInfo: TextView
     private lateinit var tvResolution: TextView
+    // Layout References
     private lateinit var controlsLayout: LinearLayout
+    private lateinit var root: LinearLayout
 
     // UI State
     private var isFullscreen: Boolean = false
@@ -47,6 +50,7 @@ class UIManager(private val activity: AppCompatActivity) {
     private var screenWidth: Int = 0
     private var screenHeight: Int = 0
     private var refreshRate: Float = 60.0f
+    private var unfullscreenPaddingDP = 16
 
     // Server resolution (might be different from client if fallback used)
     private var serverWidth: Int = 0
@@ -75,6 +79,7 @@ class UIManager(private val activity: AppCompatActivity) {
     }
 
     fun initializeViews() {
+        // UI Elements
         etServerIP = activity.findViewById(R.id.et_server_ip)
         btnConnect = activity.findViewById(R.id.btn_connect)
         btnDisconnect = activity.findViewById(R.id.btn_disconnect)
@@ -83,7 +88,9 @@ class UIManager(private val activity: AppCompatActivity) {
         ivFrame = activity.findViewById(R.id.iv_frame)
         tvFrameInfo = activity.findViewById(R.id.tv_frame_info)
         tvResolution = activity.findViewById(R.id.tv_resolution)
+        // Layouts
         controlsLayout = activity.findViewById(R.id.controlsLayout)
+        root = activity.findViewById(R.id.root)
     }
 
     fun setupClickListeners() {
@@ -199,7 +206,9 @@ class UIManager(private val activity: AppCompatActivity) {
         tvResolution.visibility = View.GONE
 
         // Make image fill screen
-        ivFrame.scaleType = ImageView.ScaleType.MATRIX
+        ivFrame.scaleType = ImageView.ScaleType.FIT_XY
+        root.setPadding(0);
+
 
         updateFullscreenButton()
         activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -224,6 +233,7 @@ class UIManager(private val activity: AppCompatActivity) {
 
         // Reset image scaling
         ivFrame.scaleType = ImageView.ScaleType.FIT_CENTER
+        root.setPadding(unfullscreenPaddingDP)
 
         updateFullscreenButton()
         activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)

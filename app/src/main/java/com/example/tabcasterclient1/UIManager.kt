@@ -195,6 +195,10 @@ class UIManager(private val activity: AppCompatActivity) {
         windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
 
+        //Clear the image BEFORE changing layout to prevent recycled bitmap crash
+        val currentBitmap = (ivFrame.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
+        ivFrame.setImageDrawable(null)
+
         // Hide all UI elements except the image
         controlsLayout.visibility = View.GONE
         etServerIP.visibility = View.GONE

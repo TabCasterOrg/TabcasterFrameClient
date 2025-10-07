@@ -47,6 +47,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     private var isStreaming: Boolean = false
 
     // CRITICAL: Keep mutable software bitmap for delta regions
+    @Volatile
     private var previousBitmap: Bitmap? = null
 
     private var lastReceivedFrameId = -1
@@ -233,7 +234,9 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
     private fun recycleBitmapSafely(bitmap: Bitmap?) {
         try {
-            bitmap?.recycle()
+            if (bitmap != null && !bitmap.isRecycled) {
+                bitmap.recycle()
+            }
         } catch (e: Exception) {
             // Ignore recycling errors
         }
@@ -293,10 +296,18 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                 if (bitmap != null) {
                     mainHandler.post {
                         try {
-                            recycleBitmapSafely(previousBitmap)
+                            if (bitmap.isRecycled) {
+                                uiManager.updateFrameInfo("Cannot display frame: bitmap is recycled")
+                                return@post
+                            }
+
+                            val oldBitmap = previousBitmap
+                            previousBitmap = bitmap
 
                             uiManager.displayFrame(bitmap)
-                            previousBitmap = bitmap
+
+                            // Recycle the old bitmap AFTER displaying the new one
+                            recycleBitmapSafely(oldBitmap)
 
                             updateFPSCalculation()
 
@@ -386,84 +397,175 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
             return
         }
 
-        // Apply all operations ATOMICALLY on main thread
-        mainHandler.post {
+        // Process delta operations on background thread for better performance
+        decodingExecutor?.submit {
             try {
                 val base = previousBitmap ?: run {
                     uiManager.updateFrameInfo("No base bitmap for delta operations")
-                    return@post
+                    return@submit
+                }
+
+                if (base.isRecycled) {
+                    uiManager.updateFrameInfo("Base bitmap is recycled, cannot process delta operations")
+                    return@submit
                 }
 
                 // Validate base bitmap dimensions
                 if (base.width != info.width || base.height != info.height) {
                     uiManager.updateFrameInfo("Base bitmap size mismatch: ${base.width}x${base.height} vs ${info.width}x${info.height}")
-                    return@post
+                    return@submit
                 }
 
-                // Apply all operations to a temporary bitmap first
-                val tempBitmap = base.copy(Bitmap.Config.ARGB_8888, true)
+                // Only copy if we have operations to apply
+                if (operations.isEmpty()) {
+                    return@submit
+                }
+
+                //create a copy to avoid recycling race conditions
+                val workingBitmap = base.copy(Bitmap.Config.ARGB_8888, true)
+
                 var operationsApplied = 0
+                val decodeStartTime = System.nanoTime()
 
+                // Batch decode all PNGs first, then apply operations
+                val decodedBitmaps = mutableListOf<Bitmap?>()
                 for (op in operations) {
-                    when (op.magic) {
-                        "CREG" -> applyClearOperation(tempBitmap, op, info)
-                        "DREG" -> applyDrawOperation(tempBitmap, op)
-                    }
-                    operationsApplied++
+                    val decodedBitmap = decodeImageSoftware(op.pngBytes)
+                    decodedBitmaps.add(decodedBitmap)
                 }
+
+                // Apply all operations
+                for (i in operations.indices) {
+                    val op = operations[i]
+                    val decodedBitmap = decodedBitmaps[i]
+
+                    if (decodedBitmap != null) {
+                        when (op.magic) {
+                            "CREG" -> applyClearOperationOptimized(workingBitmap, op, decodedBitmap)
+                            "DREG" -> applyDrawOperationOptimized(workingBitmap, op, decodedBitmap)
+                        }
+                        operationsApplied++
+                    }
+                }
+
+                // Clean up decoded bitmaps
+                decodedBitmaps.forEach { recycleBitmapSafely(it) }
+
+                val decodeTimeMs = (System.nanoTime() - decodeStartTime) / 1_000_000
 
                 if (operationsApplied > 0) {
-                    // Atomically swap the bitmap
-                    recycleBitmapSafely(previousBitmap)
-                    previousBitmap = tempBitmap
-
-                    // Display the updated frame
-                    uiManager.displayFrame(tempBitmap)
-
-                    updateFPSCalculation()
-                    if (uiManager.shouldUpdateFrameInfo()) {
-                        uiManager.updateOptimizedFrameInfo(
-                            currentFrameId, frameTime, tempBitmap.width, tempBitmap.height, 0,
-                            currentFPS, avgDecodeTime, isHardwareAccelerationSupported,
-                            hardwareDecodeCount, softwareDecodeCount,
-                            totalHardwareDecodeTime, totalSoftwareDecodeTime, droppedFrames
-                        )
+                    // Update statistics
+                    synchronized(this) {
+                        totalDecodeTime += decodeTimeMs
+                        decodedFrameCount++
+                        avgDecodeTime = totalDecodeTime.toFloat() / decodedFrameCount
+                        softwareDecodeCount++
+                        totalSoftwareDecodeTime += decodeTimeMs
                     }
 
-                    uiManager.updateFrameInfo("Applied $operationsApplied operations (${operations.count { it.magic == "CREG" }} clear, ${operations.count { it.magic == "DREG" }} draw)")
-                    hasValidBaseFrame = true
+                    // Update UI on main thread
+                    mainHandler.post {
+                        try {
+                            //swap bitmaps atomically to avoid race conditions
+                            val oldBitmap = previousBitmap
+                            previousBitmap = workingBitmap
+
+                            // Display the updated frame
+                            uiManager.displayFrame(workingBitmap)
+
+                            // Recycle the old bitmap AFTER displaying the new one
+                            recycleBitmapSafely(oldBitmap)
+
+                            updateFPSCalculation()
+                            if (uiManager.shouldUpdateFrameInfo()) {
+                                uiManager.updateOptimizedFrameInfo(
+                                    currentFrameId, frameTime, workingBitmap.width, workingBitmap.height, decodeTimeMs,
+                                    currentFPS, avgDecodeTime, isHardwareAccelerationSupported,
+                                    hardwareDecodeCount, softwareDecodeCount,
+                                    totalHardwareDecodeTime, totalSoftwareDecodeTime, droppedFrames
+                                )
+                            }
+
+                            uiManager.updateFrameInfo("Applied $operationsApplied operations (${operations.count { it.magic == "CREG" }} clear, ${operations.count { it.magic == "DREG" }} draw)")
+                            hasValidBaseFrame = true
+                        } catch (e: Exception) {
+                            uiManager.updateFrameInfo("UI update error: ${e.message}")
+                        }
+                    }
                 }
             } catch (e: Exception) {
-                uiManager.updateFrameInfo("Atomic delta error: ${e.message}")
+                uiManager.updateFrameInfo("Delta processing error: ${e.message}")
                 e.printStackTrace()
             }
         }
     }
 
+
+    private fun applyClearOperationOptimized(bitmap: Bitmap, op: DeltaOperation, clearBitmap: Bitmap) {
+        try {
+            if (bitmap.isRecycled || clearBitmap.isRecycled) {
+                uiManager.updateFrameInfo("Cannot apply clear operation: bitmap is recycled")
+                return
+            }
+
+            // Validate dimensions
+            if (clearBitmap.width == op.rw && clearBitmap.height == op.rh) {
+                val clearPixels = IntArray(op.rw * op.rh)
+                clearBitmap.getPixels(clearPixels, 0, op.rw, 0, 0, op.rw, op.rh)
+
+                // Validate bounds
+                if (op.rx >= 0 && op.ry >= 0 &&
+                    op.rx + op.rw <= bitmap.width &&
+                    op.ry + op.rh <= bitmap.height) {
+                    bitmap.setPixels(clearPixels, 0, op.rw, op.rx, op.ry, op.rw, op.rh)
+                } else {
+                    uiManager.updateFrameInfo("Clear operation bounds error: ${op.rx},${op.ry} ${op.rw}x${op.rh}")
+                }
+            } else {
+                uiManager.updateFrameInfo("Clear bitmap size mismatch: ${clearBitmap.width}x${clearBitmap.height} vs ${op.rw}x${op.rh}")
+            }
+        } catch (e: Exception) {
+            uiManager.updateFrameInfo("Clear operation error: ${e.message}")
+        }
+    }
+
+    private fun applyDrawOperationOptimized(bitmap: Bitmap, op: DeltaOperation, drawBitmap: Bitmap) {
+        try {
+            // Check if bitmaps are recycled before using them
+            if (bitmap.isRecycled || drawBitmap.isRecycled) {
+                uiManager.updateFrameInfo("Cannot apply draw operation: bitmap is recycled")
+                return
+            }
+
+            // Validate dimensions
+            if (drawBitmap.width == op.rw && drawBitmap.height == op.rh) {
+                val drawPixels = IntArray(op.rw * op.rh)
+                drawBitmap.getPixels(drawPixels, 0, op.rw, 0, 0, op.rw, op.rh)
+
+                // Validate bounds
+                if (op.rx >= 0 && op.ry >= 0 &&
+                    op.rx + op.rw <= bitmap.width &&
+                    op.ry + op.rh <= bitmap.height) {
+                    bitmap.setPixels(drawPixels, 0, op.rw, op.rx, op.ry, op.rw, op.rh)
+                } else {
+                    uiManager.updateFrameInfo("Draw operation bounds error: ${op.rx},${op.ry} ${op.rw}x${op.rh}")
+                }
+            } else {
+                uiManager.updateFrameInfo("Draw bitmap size mismatch: ${drawBitmap.width}x${drawBitmap.height} vs ${op.rw}x${op.rh}")
+            }
+        } catch (e: Exception) {
+            uiManager.updateFrameInfo("Draw operation error: ${e.message}")
+        }
+    }
+
+    // Keep original functions for fallback
     private fun applyClearOperation(bitmap: Bitmap, op: DeltaOperation, info: FrameInfo) {
         try {
             // Clear operation: restore region from base content
             val clearBitmap = decodeImageSoftware(op.pngBytes)
             if (clearBitmap != null) {
-                // Validate dimensions
-                if (clearBitmap.width == op.rw && clearBitmap.height == op.rh) {
-                    val clearPixels = IntArray(op.rw * op.rh)
-                    clearBitmap.getPixels(clearPixels, 0, op.rw, 0, 0, op.rw, op.rh)
-
-                    // Validate bounds
-                    if (op.rx >= 0 && op.ry >= 0 &&
-                        op.rx + op.rw <= bitmap.width &&
-                        op.ry + op.rh <= bitmap.height) {
-                        bitmap.setPixels(clearPixels, 0, op.rw, op.rx, op.ry, op.rw, op.rh)
-                    } else {
-                        uiManager.updateFrameInfo("Clear operation bounds error: ${op.rx},${op.ry} ${op.rw}x${op.rh}")
-                    }
-
-                    recycleBitmapSafely(clearBitmap)
-                } else {
-                    uiManager.updateFrameInfo("Clear bitmap size mismatch: ${clearBitmap.width}x${clearBitmap.height} vs ${op.rw}x${op.rh}")
-                    recycleBitmapSafely(clearBitmap)
-                }
+                applyClearOperationOptimized(bitmap, op, clearBitmap)
+                recycleBitmapSafely(clearBitmap)
             } else {
                 uiManager.updateFrameInfo("Failed to decode clear operation PNG")
             }
@@ -477,25 +579,8 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
             // Draw operation: apply new content
             val drawBitmap = decodeImageSoftware(op.pngBytes)
             if (drawBitmap != null) {
-                // Validate dimensions
-                if (drawBitmap.width == op.rw && drawBitmap.height == op.rh) {
-                    val drawPixels = IntArray(op.rw * op.rh)
-                    drawBitmap.getPixels(drawPixels, 0, op.rw, 0, 0, op.rw, op.rh)
-
-                    // Validate bounds
-                    if (op.rx >= 0 && op.ry >= 0 &&
-                        op.rx + op.rw <= bitmap.width &&
-                        op.ry + op.rh <= bitmap.height) {
-                        bitmap.setPixels(drawPixels, 0, op.rw, op.rx, op.ry, op.rw, op.rh)
-                    } else {
-                        uiManager.updateFrameInfo("Draw operation bounds error: ${op.rx},${op.ry} ${op.rw}x${op.rh}")
-                    }
-
-                    recycleBitmapSafely(drawBitmap)
-                } else {
-                    uiManager.updateFrameInfo("Draw bitmap size mismatch: ${drawBitmap.width}x${drawBitmap.height} vs ${op.rw}x${op.rh}")
-                    recycleBitmapSafely(drawBitmap)
-                }
+                applyDrawOperationOptimized(bitmap, op, drawBitmap)
+                recycleBitmapSafely(drawBitmap)
             } else {
                 uiManager.updateFrameInfo("Failed to decode draw operation PNG")
             }
@@ -538,7 +623,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         private val keyframeRequestCooldown = 1000L
 
         private var lastFrameDisplayTime = 0L
-        private val minFrameInterval = 33L
+        private val minFrameInterval = 16L // Reduced from 33ms to 16ms for higher FPS (60 FPS max)
 
         fun stop() {
             running = false
@@ -937,7 +1022,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                     displayFrame(frameData, currentFrameId, frameTime, totalSize) { success ->
                         if (success) {
                             mainHandler.post {
-                                // CRITICAL FIX: Convert hardware bitmap to mutable software bitmap
+                                // Convert hardware bitmap to mutable software bitmap
                                 val displayedBitmap = previousBitmap
                                 if (displayedBitmap != null &&
                                     (!displayedBitmap.isMutable || displayedBitmap.config != Bitmap.Config.ARGB_8888)) {

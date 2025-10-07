@@ -191,9 +191,12 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         totalHardwareDecodeTime = 0L
         totalSoftwareDecodeTime = 0L
 
+        // NEW: Reset connection flags explicitly
+        lastReceivedFrameId = -1
+        expectedFrameId = 0
+
         hasValidBaseFrame = false
         lastFullFrameId = -1
-        expectedFrameId = 0
 
         uiManager.setStreamingState(false)
         uiManager.setConnectionState(false)
@@ -628,6 +631,13 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         fun stop() {
             running = false
             socket?.close()
+
+            // NEW: Clear any pending packets and reset state
+            framePackets.clear()
+            currentFrameId = -1
+            packetsReceived = 0
+            handshakeComplete = false
+            displayReady = false
         }
 
         private fun requestKeyframe() {
@@ -650,6 +660,9 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
         override fun run() {
             try {
+                // NEW: Always create fresh socket
+                socket?.close()
+                socket = null
                 socket = DatagramSocket()
                 socket?.soTimeout = 10000
 

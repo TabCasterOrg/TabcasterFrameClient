@@ -189,6 +189,12 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         val defaultIP = "10.1.10.105"
         val defaultPort = 23532
 
+        // Null check for uiManager
+        if (uiManager == null) {
+            Toast.makeText(this, "UI Manager is not initialized", Toast.LENGTH_SHORT).show()
+            return
+        }
+
         val serverIP = uiManager.getServerIP().ifEmpty { defaultIP }
         val portStr = defaultPort.toString()
 
@@ -198,8 +204,15 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
             Toast.makeText(this, "Invalid port number", Toast.LENGTH_SHORT).show()
             return
         }
+
+        // Null check for executor service
+        if (executorService == null) {
+            Toast.makeText(this, "Executor service is not initialized", Toast.LENGTH_SHORT).show()
+            return
+        }
+
         udpReceiver = UDPReceiver(serverIP, port)
-        executorService?.submit(udpReceiver)
+        executorService!!.submit(udpReceiver)
 
         uiManager.setConnectionState(true)
         uiManager.updateStatus("Connecting to $serverIP:$port")
@@ -216,7 +229,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                 if (isBitmapOperationSafe()) {
                     recycleBitmapSafely(previousBitmap)
                     previousBitmap = null
-                    uiManager.clearFrame()
+                    uiManager?.clearFrame()
                 }
             }
         }
@@ -240,9 +253,9 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         lastFullFrameId = -1
         expectedFrameId = 0
 
-        uiManager.setStreamingState(false)
-        uiManager.setConnectionState(false)
-        uiManager.resetUI()
+        uiManager?.setStreamingState(false)
+        uiManager?.setConnectionState(false)
+        uiManager?.resetUI()
     }
 
     private fun decodeImageHardware(pngData: ByteArray): Bitmap? {
@@ -310,6 +323,19 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
             return
         }
 
+        // Null checks for required parameters
+        if (pngData.isEmpty()) {
+            uiManager.updateFrameInfo("Empty PNG data received")
+            onSuccess?.invoke(false)
+            return
+        }
+
+        if (decodingExecutor == null) {
+            uiManager.updateFrameInfo("Decoding executor is null")
+            onSuccess?.invoke(false)
+            return
+        }
+
         if (pendingDecodes >= maxPendingFrames) {
             droppedFrames++
             if (droppedFrames % 5 == 0) {
@@ -321,7 +347,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
         pendingDecodes++
 
-        decodingExecutor?.submit {
+        decodingExecutor!!.submit {
             val decodeStartTime = System.nanoTime()
 
             try {
@@ -343,6 +369,13 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                 }
 
                 if (bitmap != null) {
+                    // Null check for bitmap before operations
+                    if (bitmap.isRecycled) {
+                        uiManager.updateFrameInfo("Bitmap is already recycled")
+                        onSuccess?.invoke(false)
+                        return@submit
+                    }
+
                     mainHandler.post {
                         // Use bitmap lock to synchronize all bitmap operations
                         bitmapLock.withLock {
@@ -393,6 +426,17 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     private fun processAtomicDeltaOperations(frameData: ByteArray, totalSize: Int, info: FrameInfo, currentFrameId: Int, frameTime: Long) {
         // Early exit if activity is not safe for bitmap operations
         if (!isBitmapOperationSafe()) {
+            return
+        }
+
+        // Null checks for required parameters
+        if (frameData.isEmpty()) {
+            uiManager.updateFrameInfo("Empty frame data for delta operations")
+            return
+        }
+
+        if (info == null) {
+            uiManager.updateFrameInfo("Frame info is null for delta operations")
             return
         }
 
@@ -467,6 +511,12 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                         return@withLock
                     }
 
+                    // Null check for base bitmap
+                    if (base.isRecycled) {
+                        uiManager.updateFrameInfo("Base bitmap is already recycled")
+                        return@withLock
+                    }
+
                     // Validate base bitmap dimensions
                     if (base.width != info.width || base.height != info.height) {
                         uiManager.updateFrameInfo("Base bitmap size mismatch: ${base.width}x${base.height} vs ${info.width}x${info.height}")
@@ -475,14 +525,21 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
                     // Apply all operations to a temporary bitmap first
                     val tempBitmap = base.copy(Bitmap.Config.ARGB_8888, true)
+                    if (tempBitmap == null) {
+                        uiManager.updateFrameInfo("Failed to create temporary bitmap copy")
+                        return@withLock
+                    }
+
                     var operationsApplied = 0
 
                     for (op in operations) {
-                        when (op.magic) {
-                            "CREG" -> applyClearOperation(tempBitmap, op, info)
-                            "DREG" -> applyDrawOperation(tempBitmap, op)
+                        if (op != null) {
+                            when (op.magic) {
+                                "CREG" -> applyClearOperation(tempBitmap, op, info)
+                                "DREG" -> applyDrawOperation(tempBitmap, op)
+                            }
+                            operationsApplied++
                         }
-                        operationsApplied++
                     }
 
                     if (operationsApplied > 0) {
@@ -516,6 +573,27 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
     private fun applyClearOperation(bitmap: Bitmap, op: DeltaOperation, info: FrameInfo) {
         try {
+            // Null checks for parameters
+            if (bitmap == null) {
+                uiManager.updateFrameInfo("Bitmap is null in clear operation")
+                return
+            }
+
+            if (op == null) {
+                uiManager.updateFrameInfo("Delta operation is null in clear operation")
+                return
+            }
+
+            if (info == null) {
+                uiManager.updateFrameInfo("Frame info is null in clear operation")
+                return
+            }
+
+            if (bitmap.isRecycled) {
+                uiManager.updateFrameInfo("Bitmap is recycled in clear operation")
+                return
+            }
+
             // Clear operation: restore region from base content
             val clearBitmap = decodeImageSoftware(op.pngBytes)
             if (clearBitmap != null) {
@@ -548,6 +626,22 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
     private fun applyDrawOperation(bitmap: Bitmap, op: DeltaOperation) {
         try {
+            // Null checks for parameters
+            if (bitmap == null) {
+                uiManager.updateFrameInfo("Bitmap is null in draw operation")
+                return
+            }
+
+            if (op == null) {
+                uiManager.updateFrameInfo("Delta operation is null in draw operation")
+                return
+            }
+
+            if (bitmap.isRecycled) {
+                uiManager.updateFrameInfo("Bitmap is recycled in draw operation")
+                return
+            }
+
             // Draw operation: apply new content
             val drawBitmap = decodeImageSoftware(op.pngBytes)
             if (drawBitmap != null) {
@@ -1020,12 +1114,17 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                                     // Convert hardware bitmap to mutable software bitmap
                                     val displayedBitmap = previousBitmap
                                     if (displayedBitmap != null &&
+                                        !displayedBitmap.isRecycled &&
                                         (!displayedBitmap.isMutable || displayedBitmap.config != Bitmap.Config.ARGB_8888)) {
 
                                         // Convert to mutable software bitmap for delta region updates
                                         val mutableCopy = displayedBitmap.copy(Bitmap.Config.ARGB_8888, true)
-                                        recycleBitmapSafely(displayedBitmap)
-                                        previousBitmap = mutableCopy
+                                        if (mutableCopy != null) {
+                                            recycleBitmapSafely(displayedBitmap)
+                                            previousBitmap = mutableCopy
+                                        } else {
+                                            uiManager.updateFrameInfo("Failed to create mutable bitmap copy")
+                                        }
                                     }
 
                                     hasValidBaseFrame = true
@@ -1063,12 +1162,22 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
         disconnectFromServer()
 
-        decodingExecutor?.shutdownNow()
-        executorService?.shutdownNow()
+        // Null checks before shutting down executors
+        try {
+            decodingExecutor?.shutdownNow()
+        } catch (e: Exception) {
+            // Ignore shutdown errors
+        }
+
+        try {
+            executorService?.shutdownNow()
+        } catch (e: Exception) {
+            // Ignore shutdown errors
+        }
     }
 
     override fun onBackPressed() {
-        if (uiManager.isInFullscreen() && isBitmapOperationSafe()) {
+        if (uiManager != null && uiManager.isInFullscreen() && isBitmapOperationSafe()) {
             uiManager.toggleFullscreen()
         } else {
             super.onBackPressed()

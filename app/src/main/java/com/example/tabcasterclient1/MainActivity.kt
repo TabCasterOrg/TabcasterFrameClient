@@ -309,11 +309,8 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
                             uiManager.displayFrame(bitmap)
 
-                            // CHANGE: Increased delay from 50ms to 200ms
-                            // This gives ImageView enough time to release old bitmap during fullscreen transitions
-                            mainHandler.postDelayed({
-                                recycleBitmapSafely(oldBitmap)
-                            }, 200)
+                            // Recycle the old bitmap AFTER displaying the new one
+                            recycleBitmapSafely(oldBitmap)
 
                             updateFPSCalculation()
 
@@ -479,11 +476,8 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                             // Display the updated frame
                             uiManager.displayFrame(workingBitmap)
 
-                            //Added delay for fullscreen transition
-                            mainHandler.postDelayed({
-                                recycleBitmapSafely(oldBitmap)
-                            }, 200)
-
+                            // Recycle the old bitmap AFTER displaying the new one
+                            recycleBitmapSafely(oldBitmap)
 
                             updateFPSCalculation()
                             if (uiManager.shouldUpdateFrameInfo()) {

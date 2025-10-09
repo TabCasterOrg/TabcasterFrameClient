@@ -58,6 +58,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     private var isStreaming: Boolean = false
 
     // CRITICAL: Keep mutable software bitmap for delta regions
+    @Volatile
     private var previousBitmap: Bitmap? = null
 
     private var lastReceivedFrameId = -1
@@ -236,14 +237,17 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         totalHardwareDecodeTime = 0L
         totalSoftwareDecodeTime = 0L
 
+        lastReceivedFrameId = -1
+        expectedFrameId = 0
+
         hasValidBaseFrame = false
         lastFullFrameId = -1
-        expectedFrameId = 0
 
         uiManager.setStreamingState(false)
         uiManager.setConnectionState(false)
         uiManager.resetUI()
     }
+
 
     private fun decodeImageHardware(pngData: ByteArray): Bitmap? {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -277,13 +281,61 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         }
     }
 
-    private fun recycleBitmapSafely(bitmap: Bitmap?) {
-        try {
-            bitmap?.recycle()
-        } catch (e: Exception) {
-            // Ignore recycling errors
+    private fun clearImageViewAndRecycleBitmap(bitmap: Bitmap?) {
+        if (bitmap == null || bitmap.isRecycled) return
+
+        mainHandler.post {
+            // Check if this bitmap is currently displayed
+            val currentDrawable = uiManager.getCurrentDrawable()
+            if (currentDrawable is android.graphics.drawable.BitmapDrawable) {
+                if (currentDrawable.bitmap == bitmap) {
+                    // Clear the ImageView FIRST
+                    uiManager.clearFrame()
+                    // Force view to update its display list
+                    uiManager.invalidateImageView()
+                }
+            }
+
+            // THEN recycle with 150ms delay (increased from immediate)
+            recycleHandler.postDelayed({
+                try {
+                    if (!bitmap.isRecycled) {
+                        bitmap.recycle()
+                    }
+                } catch (e: Exception) {
+                    // Ignore
+                }
+            }, 150)
         }
     }
+
+    private fun recycleBitmapSafely(bitmap: Bitmap?) {
+        if (bitmap == null || bitmap.isRecycled) return
+
+        // Add to recycle queue and schedule delayed recycling
+        synchronized(bitmapsToRecycle) {
+            bitmapsToRecycle.add(bitmap)
+        }
+
+        // Delay recycling to ensure Android rendering pipeline is done with it
+        recycleHandler.postDelayed({
+            synchronized(bitmapsToRecycle) {
+                val toRecycle = bitmapsToRecycle.toList()
+                bitmapsToRecycle.clear()
+
+                toRecycle.forEach { bmp ->
+                    try {
+                        if (!bmp.isRecycled) {
+                            bmp.recycle()
+                        }
+                    } catch (e: Exception) {
+                        // Ignore errors
+                    }
+                }
+            }
+        }, 100) // 100ms delay gives rendering pipeline time to finish
+    }
+
 
     private fun updateFPSCalculation() {
         val now = System.currentTimeMillis()
@@ -514,30 +566,72 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         }
     }
 
+
+    private fun applyClearOperationOptimized(bitmap: Bitmap, op: DeltaOperation, clearBitmap: Bitmap) {
+        try {
+            if (bitmap.isRecycled || clearBitmap.isRecycled) {
+                uiManager.updateFrameInfo("Cannot apply clear operation: bitmap is recycled")
+                return
+            }
+
+            // Validate dimensions
+            if (clearBitmap.width == op.rw && clearBitmap.height == op.rh) {
+                val clearPixels = IntArray(op.rw * op.rh)
+                clearBitmap.getPixels(clearPixels, 0, op.rw, 0, 0, op.rw, op.rh)
+
+                // Validate bounds
+                if (op.rx >= 0 && op.ry >= 0 &&
+                    op.rx + op.rw <= bitmap.width &&
+                    op.ry + op.rh <= bitmap.height) {
+                    bitmap.setPixels(clearPixels, 0, op.rw, op.rx, op.ry, op.rw, op.rh)
+                } else {
+                    uiManager.updateFrameInfo("Clear operation bounds error: ${op.rx},${op.ry} ${op.rw}x${op.rh}")
+                }
+            } else {
+                uiManager.updateFrameInfo("Clear bitmap size mismatch: ${clearBitmap.width}x${clearBitmap.height} vs ${op.rw}x${op.rh}")
+            }
+        } catch (e: Exception) {
+            uiManager.updateFrameInfo("Clear operation error: ${e.message}")
+        }
+    }
+
+    private fun applyDrawOperationOptimized(bitmap: Bitmap, op: DeltaOperation, drawBitmap: Bitmap) {
+        try {
+            // Check if bitmaps are recycled before using them
+            if (bitmap.isRecycled || drawBitmap.isRecycled) {
+                uiManager.updateFrameInfo("Cannot apply draw operation: bitmap is recycled")
+                return
+            }
+
+            // Validate dimensions
+            if (drawBitmap.width == op.rw && drawBitmap.height == op.rh) {
+                val drawPixels = IntArray(op.rw * op.rh)
+                drawBitmap.getPixels(drawPixels, 0, op.rw, 0, 0, op.rw, op.rh)
+
+                // Validate bounds
+                if (op.rx >= 0 && op.ry >= 0 &&
+                    op.rx + op.rw <= bitmap.width &&
+                    op.ry + op.rh <= bitmap.height) {
+                    bitmap.setPixels(drawPixels, 0, op.rw, op.rx, op.ry, op.rw, op.rh)
+                } else {
+                    uiManager.updateFrameInfo("Draw operation bounds error: ${op.rx},${op.ry} ${op.rw}x${op.rh}")
+                }
+            } else {
+                uiManager.updateFrameInfo("Draw bitmap size mismatch: ${drawBitmap.width}x${drawBitmap.height} vs ${op.rw}x${op.rh}")
+            }
+        } catch (e: Exception) {
+            uiManager.updateFrameInfo("Draw operation error: ${e.message}")
+        }
+    }
+
+    // Keep original functions for fallback
     private fun applyClearOperation(bitmap: Bitmap, op: DeltaOperation, info: FrameInfo) {
         try {
             // Clear operation: restore region from base content
             val clearBitmap = decodeImageSoftware(op.pngBytes)
             if (clearBitmap != null) {
-                // Validate dimensions
-                if (clearBitmap.width == op.rw && clearBitmap.height == op.rh) {
-                    val clearPixels = IntArray(op.rw * op.rh)
-                    clearBitmap.getPixels(clearPixels, 0, op.rw, 0, 0, op.rw, op.rh)
-
-                    // Validate bounds
-                    if (op.rx >= 0 && op.ry >= 0 &&
-                        op.rx + op.rw <= bitmap.width &&
-                        op.ry + op.rh <= bitmap.height) {
-                        bitmap.setPixels(clearPixels, 0, op.rw, op.rx, op.ry, op.rw, op.rh)
-                    } else {
-                        uiManager.updateFrameInfo("Clear operation bounds error: ${op.rx},${op.ry} ${op.rw}x${op.rh}")
-                    }
-
-                    recycleBitmapSafely(clearBitmap)
-                } else {
-                    uiManager.updateFrameInfo("Clear bitmap size mismatch: ${clearBitmap.width}x${clearBitmap.height} vs ${op.rw}x${op.rh}")
-                    recycleBitmapSafely(clearBitmap)
-                }
+                applyClearOperationOptimized(bitmap, op, clearBitmap)
+                recycleBitmapSafely(clearBitmap)
             } else {
                 uiManager.updateFrameInfo("Failed to decode clear operation PNG")
             }
@@ -551,25 +645,8 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
             // Draw operation: apply new content
             val drawBitmap = decodeImageSoftware(op.pngBytes)
             if (drawBitmap != null) {
-                // Validate dimensions
-                if (drawBitmap.width == op.rw && drawBitmap.height == op.rh) {
-                    val drawPixels = IntArray(op.rw * op.rh)
-                    drawBitmap.getPixels(drawPixels, 0, op.rw, 0, 0, op.rw, op.rh)
-
-                    // Validate bounds
-                    if (op.rx >= 0 && op.ry >= 0 &&
-                        op.rx + op.rw <= bitmap.width &&
-                        op.ry + op.rh <= bitmap.height) {
-                        bitmap.setPixels(drawPixels, 0, op.rw, op.rx, op.ry, op.rw, op.rh)
-                    } else {
-                        uiManager.updateFrameInfo("Draw operation bounds error: ${op.rx},${op.ry} ${op.rw}x${op.rh}")
-                    }
-
-                    recycleBitmapSafely(drawBitmap)
-                } else {
-                    uiManager.updateFrameInfo("Draw bitmap size mismatch: ${drawBitmap.width}x${drawBitmap.height} vs ${op.rw}x${op.rh}")
-                    recycleBitmapSafely(drawBitmap)
-                }
+                applyDrawOperationOptimized(bitmap, op, drawBitmap)
+                recycleBitmapSafely(drawBitmap)
             } else {
                 uiManager.updateFrameInfo("Failed to decode draw operation PNG")
             }
@@ -612,11 +689,18 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         private val keyframeRequestCooldown = 1000L
 
         private var lastFrameDisplayTime = 0L
-        private val minFrameInterval = 33L
+        private val minFrameInterval = 16L // Reduced from 33ms to 16ms for higher FPS (60 FPS max)
 
         fun stop() {
             running = false
             socket?.close()
+
+            // NEW: Clear any pending packets and reset state
+            framePackets.clear()
+            currentFrameId = -1
+            packetsReceived = 0
+            handshakeComplete = false
+            displayReady = false
         }
 
         private fun requestKeyframe() {
@@ -639,6 +723,9 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
         override fun run() {
             try {
+                // NEW: Always create fresh socket
+                socket?.close()
+                socket = null
                 socket = DatagramSocket()
                 socket?.soTimeout = 10000
 
@@ -1066,7 +1153,6 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         decodingExecutor?.shutdownNow()
         executorService?.shutdownNow()
     }
-
     override fun onBackPressed() {
         if (uiManager.isInFullscreen() && isBitmapOperationSafe()) {
             uiManager.toggleFullscreen()

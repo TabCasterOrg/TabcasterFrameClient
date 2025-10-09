@@ -195,10 +195,6 @@ class UIManager(private val activity: AppCompatActivity) {
         windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
 
-        //Clear the image BEFORE changing layout to prevent recycled bitmap crash
-        val currentBitmap = (ivFrame.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
-        ivFrame.setImageDrawable(null)
-
         // Hide all UI elements except the image
         controlsLayout.visibility = View.GONE
         etServerIP.visibility = View.GONE
@@ -211,8 +207,7 @@ class UIManager(private val activity: AppCompatActivity) {
 
         // Make image fill screen
         ivFrame.scaleType = ImageView.ScaleType.FIT_XY
-        root.setPadding(0);
-
+        root.setPadding(0)
 
         updateFullscreenButton()
         activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -224,9 +219,8 @@ class UIManager(private val activity: AppCompatActivity) {
         // Show system UI
         val windowInsetsController = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
         windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
-        //Clear the image BEFORE changing layout to prevent recycled bitmap crash
-        val currentBitmap = (ivFrame.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
-        ivFrame.setImageDrawable(null)
+
+
         // Show all UI elements
         controlsLayout.visibility = View.VISIBLE
         etServerIP.visibility = View.VISIBLE
@@ -237,7 +231,6 @@ class UIManager(private val activity: AppCompatActivity) {
         tvFrameInfo.visibility = View.VISIBLE
         tvResolution.visibility = View.VISIBLE
 
-
         // Reset image scaling
         ivFrame.scaleType = ImageView.ScaleType.FIT_CENTER
         root.setPadding(unfullscreenPaddingDP)
@@ -245,6 +238,7 @@ class UIManager(private val activity: AppCompatActivity) {
         updateFullscreenButton()
         activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
+
 
     private fun updateFullscreenButton() {
         // Ensure UI updates happen on main thread
@@ -381,7 +375,27 @@ class UIManager(private val activity: AppCompatActivity) {
             }
         }
     }
+    // Get current drawable to check if bitmap is displayed
+    fun getCurrentDrawable(): android.graphics.drawable.Drawable? {
+        return if (Looper.myLooper() == Looper.getMainLooper()) {
+            ivFrame.drawable
+        } else {
+            null
+        }
+    }
 
+    // Force ImageView to rebuild its display list
+    fun invalidateImageView() {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            ivFrame.invalidate()
+            ivFrame.requestLayout()
+        } else {
+            mainHandler.post {
+                ivFrame.invalidate()
+                ivFrame.requestLayout()
+            }
+        }
+    }
     fun updateServerResolution(width: Int, height: Int, refreshRate: Float) {
         serverWidth = width
         serverHeight = height
@@ -389,15 +403,23 @@ class UIManager(private val activity: AppCompatActivity) {
         updateResolutionInfo()
     }
 
-    // CRITICAL: This method must ONLY be called from the main thread
+    // This method must ONLY be called from the main thread
     // Bitmap operations are not thread-safe
     fun displayFrame(bitmap: Bitmap) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             throw IllegalStateException("displayFrame() must be called from the main thread!")
         }
-        ivFrame.setImageBitmap(bitmap)
-    }
 
+        // Additional safety check
+        if (!bitmap.isRecycled) {
+            try {
+                ivFrame.setImageBitmap(bitmap)
+            } catch (e: Exception) {
+                // Log but don't crash
+                android.util.Log.e("UIManager", "Error setting bitmap: ${e.message}")
+            }
+        }
+    }
     fun clearFrame() {
         if (Looper.myLooper() == Looper.getMainLooper()) {
             ivFrame.setImageBitmap(null)

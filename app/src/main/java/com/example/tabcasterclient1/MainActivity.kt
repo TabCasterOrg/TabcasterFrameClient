@@ -17,6 +17,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ExecutorService
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
@@ -26,8 +28,14 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     private var executorService: ExecutorService? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    private val bitmapsToRecycle = mutableListOf<Bitmap>()
-    private val recycleHandler = Handler(Looper.getMainLooper())
+    // Single lock for all bitmap operations to prevent race conditions
+    private val bitmapLock = ReentrantLock()
+    
+    // Lifecycle state tracking
+    @Volatile
+    private var isActivityDestroyed = false
+    @Volatile
+    private var isActivityFinishing = false
 
     private var decodingExecutor: ExecutorService? = null
     private val maxPendingFrames = 2
@@ -50,7 +58,6 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     private var isStreaming: Boolean = false
 
     // CRITICAL: Keep mutable software bitmap for delta regions
-    @Volatile
     private var previousBitmap: Bitmap? = null
 
     private var lastReceivedFrameId = -1
@@ -102,6 +109,10 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        // Reset lifecycle state
+        isActivityDestroyed = false
+        isActivityFinishing = false
+
         uiManager = UIManager(this)
         uiManager.setCallbacks(this)
         uiManager.initializeViews()
@@ -119,6 +130,24 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         uiManager.updateResolutionInfo()
     }
 
+    override fun onPause() {
+        super.onPause()
+        // Mark activity as potentially finishing to prevent bitmap operations
+        isActivityFinishing = true
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Reset finishing state when resuming
+        isActivityFinishing = false
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Mark as finishing when stopping to prevent operations during background
+        isActivityFinishing = true
+    }
+
     override fun onTryConnect() {
         connectToServer()
     }
@@ -128,13 +157,21 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     }
 
     override fun onFullscreenToggled() {
-        if (isStreaming) {
+        if (isStreaming && isBitmapOperationSafe()) {
             uiManager.toggleFullscreen()
         }
     }
 
+    /**
+     * Check if bitmap operations are safe to perform.
+     * Returns false if activity is destroyed, finishing, or in an unsafe state.
+     */
+    private fun isBitmapOperationSafe(): Boolean {
+        return !isActivityDestroyed && !isActivityFinishing && !isFinishing && !isDestroyed
+    }
+
     override fun onFrameClicked() {
-        if (isStreaming) {
+        if (isStreaming && isBitmapOperationSafe()) {
             uiManager.toggleFullscreen()
         }
     }
@@ -152,6 +189,12 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         val defaultIP = "10.1.10.105"
         val defaultPort = 23532
 
+        // Null check for uiManager
+        if (uiManager == null) {
+            Toast.makeText(this, "UI Manager is not initialized", Toast.LENGTH_SHORT).show()
+            return
+        }
+
         val serverIP = uiManager.getServerIP().ifEmpty { defaultIP }
         val portStr = defaultPort.toString()
 
@@ -161,8 +204,15 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
             Toast.makeText(this, "Invalid port number", Toast.LENGTH_SHORT).show()
             return
         }
+
+        // Null check for executor service
+        if (executorService == null) {
+            Toast.makeText(this, "Executor service is not initialized", Toast.LENGTH_SHORT).show()
+            return
+        }
+
         udpReceiver = UDPReceiver(serverIP, port)
-        executorService?.submit(udpReceiver)
+        executorService!!.submit(udpReceiver)
 
         uiManager.setConnectionState(true)
         uiManager.updateStatus("Connecting to $serverIP:$port")
@@ -173,17 +223,14 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         udpReceiver = null
         isStreaming = false
 
-        mainHandler.post {
-            val bitmapToRecycle = previousBitmap
-            previousBitmap = null
-
-            // Clear ImageView FIRST
-            uiManager.clearFrame()
-            uiManager.invalidateImageView()  // <-- Added this
-
-            // THEN recycle
-            if (bitmapToRecycle != null) {
-                recycleBitmapSafely(bitmapToRecycle)
+        // Use bitmap lock to safely clean up bitmaps
+        bitmapLock.withLock {
+            mainHandler.post {
+                if (isBitmapOperationSafe()) {
+                    recycleBitmapSafely(previousBitmap)
+                    previousBitmap = null
+                    uiManager?.clearFrame()
+                }
             }
         }
 
@@ -202,17 +249,14 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         totalHardwareDecodeTime = 0L
         totalSoftwareDecodeTime = 0L
 
-        lastReceivedFrameId = -1
-        expectedFrameId = 0
-
         hasValidBaseFrame = false
         lastFullFrameId = -1
+        expectedFrameId = 0
 
-        uiManager.setStreamingState(false)
-        uiManager.setConnectionState(false)
-        uiManager.resetUI()
+        uiManager?.setStreamingState(false)
+        uiManager?.setConnectionState(false)
+        uiManager?.resetUI()
     }
-
 
     private fun decodeImageHardware(pngData: ByteArray): Bitmap? {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -246,61 +290,13 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         }
     }
 
-    private fun clearImageViewAndRecycleBitmap(bitmap: Bitmap?) {
-        if (bitmap == null || bitmap.isRecycled) return
-
-        mainHandler.post {
-            // Check if this bitmap is currently displayed
-            val currentDrawable = uiManager.getCurrentDrawable()
-            if (currentDrawable is android.graphics.drawable.BitmapDrawable) {
-                if (currentDrawable.bitmap == bitmap) {
-                    // Clear the ImageView FIRST
-                    uiManager.clearFrame()
-                    // Force view to update its display list
-                    uiManager.invalidateImageView()
-                }
-            }
-
-            // THEN recycle with 150ms delay (increased from immediate)
-            recycleHandler.postDelayed({
-                try {
-                    if (!bitmap.isRecycled) {
-                        bitmap.recycle()
-                    }
-                } catch (e: Exception) {
-                    // Ignore
-                }
-            }, 150)
-        }
-    }
-
     private fun recycleBitmapSafely(bitmap: Bitmap?) {
-        if (bitmap == null || bitmap.isRecycled) return
-
-        // Add to recycle queue and schedule delayed recycling
-        synchronized(bitmapsToRecycle) {
-            bitmapsToRecycle.add(bitmap)
+        try {
+            bitmap?.recycle()
+        } catch (e: Exception) {
+            // Ignore recycling errors
         }
-
-        // Delay recycling to ensure Android rendering pipeline is done with it
-        recycleHandler.postDelayed({
-            synchronized(bitmapsToRecycle) {
-                val toRecycle = bitmapsToRecycle.toList()
-                bitmapsToRecycle.clear()
-
-                toRecycle.forEach { bmp ->
-                    try {
-                        if (!bmp.isRecycled) {
-                            bmp.recycle()
-                        }
-                    } catch (e: Exception) {
-                        // Ignore errors
-                    }
-                }
-            }
-        }, 100) // 100ms delay gives rendering pipeline time to finish
     }
-
 
     private fun updateFPSCalculation() {
         val now = System.currentTimeMillis()
@@ -321,6 +317,30 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     }
 
     private fun displayFrame(pngData: ByteArray, frameId: Int, frameTime: Long, compressedSize: Int, onSuccess: ((Boolean) -> Unit)? = null) {
+        // Early exit if activity is not safe for bitmap operations
+        if (!isBitmapOperationSafe()) {
+            onSuccess?.invoke(false)
+            return
+        }
+
+        // Null checks for required objects
+        if (pngData.isEmpty()) {
+            uiManager.updateFrameInfo("Empty PNG data received")
+            onSuccess?.invoke(false)
+            return
+        }
+
+        if (decodingExecutor == null) {
+            uiManager.updateFrameInfo("Decoding executor is null")
+            onSuccess?.invoke(false)
+            return
+        }
+
+        if (uiManager == null) {
+            onSuccess?.invoke(false)
+            return
+        }
+
         if (pendingDecodes >= maxPendingFrames) {
             droppedFrames++
             if (droppedFrames % 5 == 0) {
@@ -332,7 +352,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
         pendingDecodes++
 
-        decodingExecutor?.submit {
+        decodingExecutor!!.submit {
             val decodeStartTime = System.nanoTime()
 
             try {
@@ -355,45 +375,54 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
                 if (bitmap != null) {
                     mainHandler.post {
-                        try {
-                            if (bitmap.isRecycled) {
+                        // Use bitmap lock to synchronize all bitmap operations
+                        bitmapLock.withLock {
+                            // Double-check lifecycle state after acquiring lock
+                            if (!isBitmapOperationSafe()) {
+                                recycleBitmapSafely(bitmap)
                                 onSuccess?.invoke(false)
-                                return@post
+                                return@withLock
                             }
 
-                            // Store old bitmap reference before updating ImageView
-                            val oldBitmap = previousBitmap
+                            try {
+                                // Null check for bitmap before operations
+                                if (bitmap.isRecycled) {
+                                    uiManager.updateFrameInfo("Bitmap is already recycled")
+                                    onSuccess?.invoke(false)
+                                    return@withLock
+                                }
 
-                            // Update reference before displaying
-                            previousBitmap = bitmap
+                                recycleBitmapSafely(previousBitmap)
 
-                            // Display new bitmap
-                            uiManager.displayFrame(bitmap)
+                                // Null check for uiManager before display
+                                if (uiManager != null) {
+                                    uiManager.displayFrame(bitmap)
+                                    previousBitmap = bitmap
 
-                            // Schedule old bitmap for delayed recycling
-                            if (oldBitmap != null && oldBitmap != bitmap) {
-                                clearImageViewAndRecycleBitmap(oldBitmap)
+                                    updateFPSCalculation()
+
+                                    if (uiManager.shouldUpdateFrameInfo()) {
+                                        uiManager.updateOptimizedFrameInfo(
+                                            frameId, frameTime, bitmap.width, bitmap.height, decodeTimeMs,
+                                            currentFPS, avgDecodeTime, isHardwareAccelerationSupported,
+                                            hardwareDecodeCount, softwareDecodeCount,
+                                            totalHardwareDecodeTime, totalSoftwareDecodeTime, droppedFrames
+                                        )
+                                    }
+                                } else {
+                                    // Clean up bitmap if uiManager is null
+                                    recycleBitmapSafely(bitmap)
+                                }
+
+                                onSuccess?.invoke(true)
+                            } catch (e: Exception) {
+                                uiManager?.updateFrameInfo("Error displaying frame: ${e.message}")
+                                onSuccess?.invoke(false)
                             }
-
-                            updateFPSCalculation()
-
-                            if (uiManager.shouldUpdateFrameInfo()) {
-                                uiManager.updateOptimizedFrameInfo(
-                                    frameId, frameTime, bitmap.width, bitmap.height, decodeTimeMs,
-                                    currentFPS, avgDecodeTime, isHardwareAccelerationSupported,
-                                    hardwareDecodeCount, softwareDecodeCount,
-                                    totalHardwareDecodeTime, totalSoftwareDecodeTime, droppedFrames
-                                )
-                            }
-
-                            onSuccess?.invoke(true)
-                        } catch (e: Exception) {
-                            uiManager.updateFrameInfo("Error displaying frame: ${e.message}")
-                            onSuccess?.invoke(false)
                         }
                     }
                 } else {
-                    uiManager.updateFrameInfo("Failed to decode PNG frame $frameId")
+                    uiManager?.updateFrameInfo("Failed to decode PNG frame $frameId")
                     onSuccess?.invoke(false)
                 }
             } catch (e: Exception) {
@@ -406,6 +435,26 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     }
 
     private fun processAtomicDeltaOperations(frameData: ByteArray, totalSize: Int, info: FrameInfo, currentFrameId: Int, frameTime: Long) {
+        // Early exit if activity is not safe for bitmap operations
+        if (!isBitmapOperationSafe()) {
+            return
+        }
+
+        // Null checks for required parameters
+        if (frameData.isEmpty()) {
+            uiManager?.updateFrameInfo("Empty frame data for delta operations")
+            return
+        }
+
+        if (info == null) {
+            uiManager?.updateFrameInfo("Frame info is null for delta operations")
+            return
+        }
+
+        if (uiManager == null) {
+            return
+        }
+
         var offset = 0
         val operations = mutableListOf<DeltaOperation>()
 
@@ -463,201 +512,181 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
             return
         }
 
-        // Process delta operations on background thread for better performance
-        decodingExecutor?.submit {
-            try {
-                val base = previousBitmap ?: run {
-                    uiManager.updateFrameInfo("No base bitmap for delta operations")
-                    return@submit
+        // Apply all operations ATOMICALLY on main thread with bitmap lock
+        mainHandler.post {
+            bitmapLock.withLock {
+                // Double-check lifecycle state after acquiring lock
+                if (!isBitmapOperationSafe()) {
+                    return@withLock
                 }
 
-                if (base.isRecycled) {
-                    uiManager.updateFrameInfo("Base bitmap is recycled, cannot process delta operations")
-                    return@submit
-                }
-
-                // Validate base bitmap dimensions
-                if (base.width != info.width || base.height != info.height) {
-                    uiManager.updateFrameInfo("Base bitmap size mismatch: ${base.width}x${base.height} vs ${info.width}x${info.height}")
-                    return@submit
-                }
-
-                // Only copy if we have operations to apply
-                if (operations.isEmpty()) {
-                    return@submit
-                }
-
-                //create a copy to avoid recycling race conditions
-                val workingBitmap = base.copy(Bitmap.Config.ARGB_8888, true)
-
-                var operationsApplied = 0
-                val decodeStartTime = System.nanoTime()
-
-                // Batch decode all PNGs first, then apply operations
-                val decodedBitmaps = mutableListOf<Bitmap?>()
-                for (op in operations) {
-                    val decodedBitmap = decodeImageSoftware(op.pngBytes)
-                    decodedBitmaps.add(decodedBitmap)
-                }
-
-                // Apply all operations
-                for (i in operations.indices) {
-                    val op = operations[i]
-                    val decodedBitmap = decodedBitmaps[i]
-
-                    if (decodedBitmap != null) {
-                        when (op.magic) {
-                            "CREG" -> applyClearOperationOptimized(workingBitmap, op, decodedBitmap)
-                            "DREG" -> applyDrawOperationOptimized(workingBitmap, op, decodedBitmap)
-                        }
-                        operationsApplied++
-                    }
-                }
-
-                // Clean up decoded bitmaps
-                decodedBitmaps.forEach { recycleBitmapSafely(it) }
-
-                val decodeTimeMs = (System.nanoTime() - decodeStartTime) / 1_000_000
-
-                if (operationsApplied > 0) {
-                    // Update statistics
-                    synchronized(this) {
-                        totalDecodeTime += decodeTimeMs
-                        decodedFrameCount++
-                        avgDecodeTime = totalDecodeTime.toFloat() / decodedFrameCount
-                        softwareDecodeCount++
-                        totalSoftwareDecodeTime += decodeTimeMs
+                try {
+                    val base = previousBitmap ?: run {
+                        uiManager?.updateFrameInfo("No base bitmap for delta operations")
+                        return@withLock
                     }
 
-                    // Update UI on main thread
-                    mainHandler.post {
-                        try {
-                            // Store old bitmap reference BEFORE any operations
-                            val oldBitmap = previousBitmap
+                    // Null check for base bitmap
+                    if (base.isRecycled) {
+                        uiManager?.updateFrameInfo("Base bitmap is already recycled")
+                        return@withLock
+                    }
 
-                            // Update reference BEFORE displaying
-                            previousBitmap = workingBitmap
+                    // Validate base bitmap dimensions
+                    if (base.width != info.width || base.height != info.height) {
+                        uiManager?.updateFrameInfo("Base bitmap size mismatch: ${base.width}x${base.height} vs ${info.width}x${info.height}")
+                        return@withLock
+                    }
 
-                            // Display the updated frame
-                            uiManager.displayFrame(workingBitmap)
+                    // Apply all operations to a temporary bitmap first
+                    val tempBitmap = base.copy(Bitmap.Config.ARGB_8888, true)
+                    if (tempBitmap == null) {
+                        uiManager?.updateFrameInfo("Failed to create temporary bitmap copy")
+                        return@withLock
+                    }
 
-                            // Schedule old bitmap for delayed recycling
-                            if (oldBitmap != null && oldBitmap != workingBitmap) {
-                                recycleBitmapSafely(oldBitmap)
+                    var operationsApplied = 0
+
+                    for (op in operations) {
+                        if (op != null) {
+                            when (op.magic) {
+                                "CREG" -> applyClearOperation(tempBitmap, op, info)
+                                "DREG" -> applyDrawOperation(tempBitmap, op)
                             }
-
-                            updateFPSCalculation()
-                            if (uiManager.shouldUpdateFrameInfo()) {
-                                uiManager.updateOptimizedFrameInfo(
-                                    currentFrameId, frameTime, workingBitmap.width, workingBitmap.height, decodeTimeMs,
-                                    currentFPS, avgDecodeTime, isHardwareAccelerationSupported,
-                                    hardwareDecodeCount, softwareDecodeCount,
-                                    totalHardwareDecodeTime, totalSoftwareDecodeTime, droppedFrames
-                                )
-                            }
-
-                            uiManager.updateFrameInfo("Applied $operationsApplied operations (${operations.count { it.magic == "CREG" }} clear, ${operations.count { it.magic == "DREG" }} draw)")
-                            hasValidBaseFrame = true
-                        } catch (e: Exception) {
-                            uiManager.updateFrameInfo("UI update error: ${e.message}")
-                            // If UI update failed, recycle the working bitmap since it won't be displayed
-                            recycleBitmapSafely(workingBitmap)
+                            operationsApplied++
                         }
                     }
+
+                    if (operationsApplied > 0) {
+                        // Atomically swap the bitmap
+                        recycleBitmapSafely(previousBitmap)
+                        previousBitmap = tempBitmap
+
+                        // Display the updated frame
+                        uiManager?.displayFrame(tempBitmap)
+
+                        updateFPSCalculation()
+                        if (uiManager?.shouldUpdateFrameInfo() == true) {
+                            uiManager.updateOptimizedFrameInfo(
+                                currentFrameId, frameTime, tempBitmap.width, tempBitmap.height, 0,
+                                currentFPS, avgDecodeTime, isHardwareAccelerationSupported,
+                                hardwareDecodeCount, softwareDecodeCount,
+                                totalHardwareDecodeTime, totalSoftwareDecodeTime, droppedFrames
+                            )
+                        }
+
+                        uiManager?.updateFrameInfo("Applied $operationsApplied operations (${operations.count { it.magic == "CREG" }} clear, ${operations.count { it.magic == "DREG" }} draw)")
+                        hasValidBaseFrame = true
+                    } else {
+                        // Clean up temp bitmap if no operations were applied
+                        recycleBitmapSafely(tempBitmap)
+                    }
+                } catch (e: Exception) {
+                    uiManager?.updateFrameInfo("Atomic delta error: ${e.message}")
+                    e.printStackTrace()
                 }
-            } catch (e: Exception) {
-                uiManager.updateFrameInfo("Delta processing error: ${e.message}")
-                e.printStackTrace()
             }
         }
     }
 
-
-    private fun applyClearOperationOptimized(bitmap: Bitmap, op: DeltaOperation, clearBitmap: Bitmap) {
-        try {
-            if (bitmap.isRecycled || clearBitmap.isRecycled) {
-                uiManager.updateFrameInfo("Cannot apply clear operation: bitmap is recycled")
-                return
-            }
-
-            // Validate dimensions
-            if (clearBitmap.width == op.rw && clearBitmap.height == op.rh) {
-                val clearPixels = IntArray(op.rw * op.rh)
-                clearBitmap.getPixels(clearPixels, 0, op.rw, 0, 0, op.rw, op.rh)
-
-                // Validate bounds
-                if (op.rx >= 0 && op.ry >= 0 &&
-                    op.rx + op.rw <= bitmap.width &&
-                    op.ry + op.rh <= bitmap.height) {
-                    bitmap.setPixels(clearPixels, 0, op.rw, op.rx, op.ry, op.rw, op.rh)
-                } else {
-                    uiManager.updateFrameInfo("Clear operation bounds error: ${op.rx},${op.ry} ${op.rw}x${op.rh}")
-                }
-            } else {
-                uiManager.updateFrameInfo("Clear bitmap size mismatch: ${clearBitmap.width}x${clearBitmap.height} vs ${op.rw}x${op.rh}")
-            }
-        } catch (e: Exception) {
-            uiManager.updateFrameInfo("Clear operation error: ${e.message}")
-        }
-    }
-
-    private fun applyDrawOperationOptimized(bitmap: Bitmap, op: DeltaOperation, drawBitmap: Bitmap) {
-        try {
-            // Check if bitmaps are recycled before using them
-            if (bitmap.isRecycled || drawBitmap.isRecycled) {
-                uiManager.updateFrameInfo("Cannot apply draw operation: bitmap is recycled")
-                return
-            }
-
-            // Validate dimensions
-            if (drawBitmap.width == op.rw && drawBitmap.height == op.rh) {
-                val drawPixels = IntArray(op.rw * op.rh)
-                drawBitmap.getPixels(drawPixels, 0, op.rw, 0, 0, op.rw, op.rh)
-
-                // Validate bounds
-                if (op.rx >= 0 && op.ry >= 0 &&
-                    op.rx + op.rw <= bitmap.width &&
-                    op.ry + op.rh <= bitmap.height) {
-                    bitmap.setPixels(drawPixels, 0, op.rw, op.rx, op.ry, op.rw, op.rh)
-                } else {
-                    uiManager.updateFrameInfo("Draw operation bounds error: ${op.rx},${op.ry} ${op.rw}x${op.rh}")
-                }
-            } else {
-                uiManager.updateFrameInfo("Draw bitmap size mismatch: ${drawBitmap.width}x${drawBitmap.height} vs ${op.rw}x${op.rh}")
-            }
-        } catch (e: Exception) {
-            uiManager.updateFrameInfo("Draw operation error: ${e.message}")
-        }
-    }
-
-    // Keep original functions for fallback
     private fun applyClearOperation(bitmap: Bitmap, op: DeltaOperation, info: FrameInfo) {
         try {
+            // Null checks for parameters
+            if (bitmap == null) {
+                uiManager?.updateFrameInfo("Bitmap is null in clear operation")
+                return
+            }
+
+            if (op == null) {
+                uiManager?.updateFrameInfo("Delta operation is null in clear operation")
+                return
+            }
+
+            if (info == null) {
+                uiManager?.updateFrameInfo("Frame info is null in clear operation")
+                return
+            }
+
+            if (bitmap.isRecycled) {
+                uiManager?.updateFrameInfo("Bitmap is recycled in clear operation")
+                return
+            }
+
             // Clear operation: restore region from base content
             val clearBitmap = decodeImageSoftware(op.pngBytes)
             if (clearBitmap != null) {
-                applyClearOperationOptimized(bitmap, op, clearBitmap)
-                recycleBitmapSafely(clearBitmap)
+                // Validate dimensions
+                if (clearBitmap.width == op.rw && clearBitmap.height == op.rh) {
+                    val clearPixels = IntArray(op.rw * op.rh)
+                    clearBitmap.getPixels(clearPixels, 0, op.rw, 0, 0, op.rw, op.rh)
+
+                    // Validate bounds
+                    if (op.rx >= 0 && op.ry >= 0 &&
+                        op.rx + op.rw <= bitmap.width &&
+                        op.ry + op.rh <= bitmap.height) {
+                        bitmap.setPixels(clearPixels, 0, op.rw, op.rx, op.ry, op.rw, op.rh)
+                    } else {
+                        uiManager?.updateFrameInfo("Clear operation bounds error: ${op.rx},${op.ry} ${op.rw}x${op.rh}")
+                    }
+
+                    recycleBitmapSafely(clearBitmap)
+                } else {
+                    uiManager?.updateFrameInfo("Clear bitmap size mismatch: ${clearBitmap.width}x${clearBitmap.height} vs ${op.rw}x${op.rh}")
+                    recycleBitmapSafely(clearBitmap)
+                }
             } else {
-                uiManager.updateFrameInfo("Failed to decode clear operation PNG")
+                uiManager?.updateFrameInfo("Failed to decode clear operation PNG")
             }
         } catch (e: Exception) {
-            uiManager.updateFrameInfo("Clear operation error: ${e.message}")
+            uiManager?.updateFrameInfo("Clear operation error: ${e.message}")
         }
     }
 
     private fun applyDrawOperation(bitmap: Bitmap, op: DeltaOperation) {
         try {
+            // Null checks for parameters
+            if (bitmap == null) {
+                uiManager?.updateFrameInfo("Bitmap is null in draw operation")
+                return
+            }
+
+            if (op == null) {
+                uiManager?.updateFrameInfo("Delta operation is null in draw operation")
+                return
+            }
+
+            if (bitmap.isRecycled) {
+                uiManager?.updateFrameInfo("Bitmap is recycled in draw operation")
+                return
+            }
+
             // Draw operation: apply new content
             val drawBitmap = decodeImageSoftware(op.pngBytes)
             if (drawBitmap != null) {
-                applyDrawOperationOptimized(bitmap, op, drawBitmap)
-                recycleBitmapSafely(drawBitmap)
+                // Validate dimensions
+                if (drawBitmap.width == op.rw && drawBitmap.height == op.rh) {
+                    val drawPixels = IntArray(op.rw * op.rh)
+                    drawBitmap.getPixels(drawPixels, 0, op.rw, 0, 0, op.rw, op.rh)
+
+                    // Validate bounds
+                    if (op.rx >= 0 && op.ry >= 0 &&
+                        op.rx + op.rw <= bitmap.width &&
+                        op.ry + op.rh <= bitmap.height) {
+                        bitmap.setPixels(drawPixels, 0, op.rw, op.rx, op.ry, op.rw, op.rh)
+                    } else {
+                        uiManager?.updateFrameInfo("Draw operation bounds error: ${op.rx},${op.ry} ${op.rw}x${op.rh}")
+                    }
+
+                    recycleBitmapSafely(drawBitmap)
+                } else {
+                    uiManager?.updateFrameInfo("Draw bitmap size mismatch: ${drawBitmap.width}x${drawBitmap.height} vs ${op.rw}x${op.rh}")
+                    recycleBitmapSafely(drawBitmap)
+                }
             } else {
-                uiManager.updateFrameInfo("Failed to decode draw operation PNG")
+                uiManager?.updateFrameInfo("Failed to decode draw operation PNG")
             }
         } catch (e: Exception) {
-            uiManager.updateFrameInfo("Draw operation error: ${e.message}")
+            uiManager?.updateFrameInfo("Draw operation error: ${e.message}")
         }
     }
 
@@ -695,18 +724,11 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         private val keyframeRequestCooldown = 1000L
 
         private var lastFrameDisplayTime = 0L
-        private val minFrameInterval = 16L // Reduced from 33ms to 16ms for higher FPS (60 FPS max)
+        private val minFrameInterval = 33L
 
         fun stop() {
             running = false
             socket?.close()
-
-            // NEW: Clear any pending packets and reset state
-            framePackets.clear()
-            currentFrameId = -1
-            packetsReceived = 0
-            handshakeComplete = false
-            displayReady = false
         }
 
         private fun requestKeyframe() {
@@ -721,35 +743,32 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                 val requestPacket = DatagramPacket(requestData, requestData.size, serverAddress, serverPort)
                 socket?.send(requestPacket)
                 lastKeyframeRequestTime = now
-                uiManager.updateStatus("Requested keyframe from server")
+                uiManager?.updateStatus("Requested keyframe from server")
             } catch (e: Exception) {
-                uiManager.updateStatus("Failed to request keyframe: ${e.localizedMessage}")
+                uiManager?.updateStatus("Failed to request keyframe: ${e.localizedMessage}")
             }
         }
 
         override fun run() {
             try {
-                // NEW: Always create fresh socket
-                socket?.close()
-                socket = null
                 socket = DatagramSocket()
                 socket?.soTimeout = 10000
 
                 val serverAddress = InetAddress.getByName(serverIP)
-                uiManager.updateStatus("Socket created. Starting handshake...")
+                uiManager?.updateStatus("Socket created. Starting handshake...")
 
                 if (!performHandshake(serverAddress)) {
-                    uiManager.updateStatus("Handshake failed")
+                    uiManager?.updateStatus("Handshake failed")
                     return
                 }
 
                 if (!requestStreaming(serverAddress)) {
-                    uiManager.updateStatus("Failed to start streaming")
+                    uiManager?.updateStatus("Failed to start streaming")
                     return
                 }
 
                 isStreaming = true
-                uiManager.setStreamingState(true)
+                uiManager?.setStreamingState(true)
 
                 val buffer = ByteArray(2048)
                 while (running) {
@@ -758,64 +777,64 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                         socket?.receive(packet)
                         processReceivedPacket(packet.data, packet.length)
                     } catch (e: SocketTimeoutException) {
-                        uiManager.updateStatus("Waiting for data...")
+                        uiManager?.updateStatus("Waiting for data...")
                     }
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
-                uiManager.updateStatus("Error: ${e.localizedMessage}")
+                uiManager?.updateStatus("Error: ${e.localizedMessage}")
             } finally {
                 socket?.close()
                 isStreaming = false
-                uiManager.setStreamingState(false)
-                uiManager.updateStatus("Socket closed")
+                uiManager?.setStreamingState(false)
+                uiManager?.updateStatus("Socket closed")
             }
         }
 
         private fun performHandshake(serverAddress: InetAddress): Boolean {
             try {
-                uiManager.updateStatus("Sending HELLO...")
+                uiManager?.updateStatus("Sending HELLO...")
                 if (!sendMessage(serverAddress, "HELLO")) return false
 
                 if (!waitForMessage("HELLO_ACK", 5000)) {
-                    uiManager.updateStatus("Did not receive HELLO_ACK")
+                    uiManager?.updateStatus("Did not receive HELLO_ACK")
                     return false
                 }
-                uiManager.updateStatus("Received HELLO_ACK")
+                uiManager?.updateStatus("Received HELLO_ACK")
 
-                val resolutionMsg = "RESOLUTION:${uiManager.getScreenWidth()}:${uiManager.getScreenHeight()}:${uiManager.getRefreshRate()}"
-                uiManager.updateStatus("Sending resolution: ${uiManager.getScreenWidth()}x${uiManager.getScreenHeight()}@${uiManager.getRefreshRate()}Hz")
+                val resolutionMsg = "RESOLUTION:${uiManager?.getScreenWidth()}:${uiManager?.getScreenHeight()}:${uiManager?.getRefreshRate()}"
+                uiManager?.updateStatus("Sending resolution: ${uiManager?.getScreenWidth()}x${uiManager?.getScreenHeight()}@${uiManager?.getRefreshRate()}Hz")
                 if (!sendMessage(serverAddress, resolutionMsg)) return false
 
                 val resolutionResponse = waitForResolutionResponse(15000)
                 if (resolutionResponse == null) {
-                    uiManager.updateStatus("No resolution response from server")
+                    uiManager?.updateStatus("No resolution response from server")
                     return false
                 }
 
                 if (resolutionResponse == "RESOLUTION_ACK") {
-                    uiManager.updateStatus("Resolution accepted by server")
+                    uiManager?.updateStatus("Resolution accepted by server")
                 } else if (resolutionResponse.startsWith("RESOLUTION_CHANGED:")) {
                     handleResolutionChanged(resolutionResponse)
                 } else {
-                    uiManager.updateStatus("Unexpected resolution response: $resolutionResponse")
+                    uiManager?.updateStatus("Unexpected resolution response: $resolutionResponse")
                     return false
                 }
 
                 val displayReadyMsg = waitForDisplayReady(15000)
                 if (displayReadyMsg == null) {
-                    uiManager.updateStatus("Display setup timeout")
+                    uiManager?.updateStatus("Display setup timeout")
                     return false
                 }
 
-                uiManager.updateStatus("Display ready: $displayReadyMsg")
+                uiManager?.updateStatus("Display ready: $displayReadyMsg")
                 handshakeComplete = true
                 displayReady = true
 
                 return true
 
             } catch (e: Exception) {
-                uiManager.updateStatus("Handshake error: ${e.localizedMessage}")
+                uiManager?.updateStatus("Handshake error: ${e.localizedMessage}")
                 return false
             }
         }
@@ -833,8 +852,8 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                         val height = resolutionParts[1].toInt()
                         val refreshRate = refreshRatePart.toFloat()
 
-                        uiManager.updateServerResolution(width, height, refreshRate)
-                        uiManager.updateStatus("Server using fallback resolution: ${width}x${height}@${refreshRate}Hz")
+                        uiManager?.updateServerResolution(width, height, refreshRate)
+                        uiManager?.updateStatus("Server using fallback resolution: ${width}x${height}@${refreshRate}Hz")
 
                         mainHandler.post {
                             Toast.makeText(
@@ -846,7 +865,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                     }
                 }
             } catch (e: Exception) {
-                uiManager.updateStatus("Error parsing resolution change: ${e.localizedMessage}")
+                uiManager?.updateStatus("Error parsing resolution change: ${e.localizedMessage}")
             }
         }
 
@@ -867,7 +886,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                         receivedMessage.startsWith("RESOLUTION_CHANGED:")) {
                         return receivedMessage
                     } else if (receivedMessage.startsWith("RESOLUTION_ERROR:")) {
-                        uiManager.updateStatus("Server error: $receivedMessage")
+                        uiManager?.updateStatus("Server error: $receivedMessage")
                         return null
                     }
                 }
@@ -875,25 +894,25 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
             } catch (e: SocketTimeoutException) {
                 return null
             } catch (e: Exception) {
-                uiManager.updateStatus("Wait error: ${e.localizedMessage}")
+                uiManager?.updateStatus("Wait error: ${e.localizedMessage}")
                 return null
             }
         }
 
         private fun requestStreaming(serverAddress: InetAddress): Boolean {
             try {
-                uiManager.updateStatus("Requesting stream start...")
+                uiManager?.updateStatus("Requesting stream start...")
                 if (!sendMessage(serverAddress, "START_STREAM")) return false
 
                 if (!waitForMessage("STREAM_STARTED", 5000)) {
-                    uiManager.updateStatus("Did not receive STREAM_STARTED")
+                    uiManager?.updateStatus("Did not receive STREAM_STARTED")
                     return false
                 }
-                uiManager.updateStatus("Streaming started")
+                uiManager?.updateStatus("Streaming started")
                 return true
 
             } catch (e: Exception) {
-                uiManager.updateStatus("Stream request error: ${e.localizedMessage}")
+                uiManager?.updateStatus("Stream request error: ${e.localizedMessage}")
                 return false
             }
         }
@@ -905,7 +924,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                 socket?.send(sendPacket)
                 true
             } catch (e: Exception) {
-                uiManager.updateStatus("Send error: ${e.localizedMessage}")
+                uiManager?.updateStatus("Send error: ${e.localizedMessage}")
                 false
             }
         }
@@ -926,7 +945,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                         return true
                     } else if (receivedMessage.startsWith("DISPLAY_ERROR:") ||
                         receivedMessage.startsWith("RESOLUTION_ERROR:")) {
-                        uiManager.updateStatus("Server error: $receivedMessage")
+                        uiManager?.updateStatus("Server error: $receivedMessage")
                         return false
                     }
                 }
@@ -934,7 +953,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
             } catch (e: SocketTimeoutException) {
                 return false
             } catch (e: Exception) {
-                uiManager.updateStatus("Wait error: ${e.localizedMessage}")
+                uiManager?.updateStatus("Wait error: ${e.localizedMessage}")
                 return false
             }
         }
@@ -954,7 +973,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                     if (receivedMessage.startsWith("DISPLAY_READY:")) {
                         return receivedMessage
                     } else if (receivedMessage.startsWith("DISPLAY_ERROR:")) {
-                        uiManager.updateStatus("Server error: $receivedMessage")
+                        uiManager?.updateStatus("Server error: $receivedMessage")
                         return null
                     }
                 }
@@ -962,7 +981,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
             } catch (e: SocketTimeoutException) {
                 return null
             } catch (e: Exception) {
-                uiManager.updateStatus("Display ready wait error: ${e.localizedMessage}")
+                uiManager?.updateStatus("Display ready wait error: ${e.localizedMessage}")
                 return null
             }
         }
@@ -981,7 +1000,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                     handleFramePacket(data, length)
                 }
             } catch (e: Exception) {
-                uiManager.updateStatus("Packet processing error: ${e.localizedMessage}")
+                uiManager?.updateStatus("Packet processing error: ${e.localizedMessage}")
             }
         }
 
@@ -995,12 +1014,12 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                     frameInfo = FrameInfo(width, height)
                     val hasDelta = parts.size >= 4 && parts[3] == "DELTA"
                     if (hasDelta) {
-                        uiManager.updateStatus("Frame info received: ${width}x${height} (PNG+DELTA)")
+                        uiManager?.updateStatus("Frame info received: ${width}x${height} (PNG+DELTA)")
                     } else {
-                        uiManager.updateStatus("Frame info received: ${width}x${height} (PNG)")
+                        uiManager?.updateStatus("Frame info received: ${width}x${height} (PNG)")
                     }
                 } else {
-                    uiManager.updateStatus("Invalid frame info format")
+                    uiManager?.updateStatus("Invalid frame info format")
                 }
             }
         }
@@ -1018,13 +1037,13 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                 )
 
                 if (header.dataSize < 0 || header.dataSize > length - 16) {
-                    uiManager.updateStatus("Invalid packet header")
+                    uiManager?.updateStatus("Invalid packet header")
                     return
                 }
 
                 if (header.frameId != currentFrameId) {
                     if (currentFrameId >= 0 && packetsReceived > 0) {
-                        uiManager.updateStatus("Frame ${currentFrameId}: ${packetsReceived}/${expectedPackets} packets")
+                        uiManager?.updateStatus("Frame ${currentFrameId}: ${packetsReceived}/${expectedPackets} packets")
                     }
 
                     currentFrameId = header.frameId
@@ -1035,7 +1054,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
                     if (currentFrameId != expectedFrameId) {
                         if (currentFrameId > expectedFrameId) {
-                            uiManager.updateStatus("Frame gap detected: expected $expectedFrameId, got $currentFrameId")
+                            uiManager?.updateStatus("Frame gap detected: expected $expectedFrameId, got $currentFrameId")
                             requestKeyframe()
                             hasValidBaseFrame = false
                         }
@@ -1055,11 +1074,11 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                     reconstructAndDisplayFrame(frameTime)
                 } else {
                     if (packetsReceived % 50 == 0) {
-                        uiManager.updateStatus("Frame ${currentFrameId}: ${packetsReceived}/${expectedPackets}")
+                        uiManager?.updateStatus("Frame ${currentFrameId}: ${packetsReceived}/${expectedPackets}")
                     }
                 }
             } catch (e: Exception) {
-                uiManager.updateStatus("Frame packet error: ${e.localizedMessage}")
+                uiManager?.updateStatus("Frame packet error: ${e.localizedMessage}")
             }
         }
 
@@ -1083,7 +1102,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                         System.arraycopy(packetData, 0, frameData, offset, packetData.size)
                         offset += packetData.size
                     } else {
-                        uiManager.updateStatus("Missing packet $packetId in frame $currentFrameId")
+                        uiManager?.updateStatus("Missing packet $packetId in frame $currentFrameId")
                         return
                     }
                 }
@@ -1104,30 +1123,42 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                     displayFrame(frameData, currentFrameId, frameTime, totalSize) { success ->
                         if (success) {
                             mainHandler.post {
-                                // Convert hardware bitmap to mutable software bitmap
-                                val displayedBitmap = previousBitmap
-                                if (displayedBitmap != null &&
-                                    (!displayedBitmap.isMutable || displayedBitmap.config != Bitmap.Config.ARGB_8888)) {
+                                bitmapLock.withLock {
+                                    // Double-check lifecycle state after acquiring lock
+                                    if (!isBitmapOperationSafe()) {
+                                        return@withLock
+                                    }
 
-                                    // Convert to mutable software bitmap for delta region updates
-                                    val mutableCopy = displayedBitmap.copy(Bitmap.Config.ARGB_8888, true)
-                                    recycleBitmapSafely(displayedBitmap)
-                                    previousBitmap = mutableCopy
+                                    // Convert hardware bitmap to mutable software bitmap
+                                    val displayedBitmap = previousBitmap
+                                    if (displayedBitmap != null &&
+                                        !displayedBitmap.isRecycled &&
+                                        (!displayedBitmap.isMutable || displayedBitmap.config != Bitmap.Config.ARGB_8888)) {
+
+                                        // Convert to mutable software bitmap for delta region updates
+                                        val mutableCopy = displayedBitmap.copy(Bitmap.Config.ARGB_8888, true)
+                                        if (mutableCopy != null) {
+                                            recycleBitmapSafely(displayedBitmap)
+                                            previousBitmap = mutableCopy
+                                        } else {
+                                            uiManager?.updateFrameInfo("Failed to create mutable bitmap copy")
+                                        }
+                                    }
+
+                                    hasValidBaseFrame = true
+                                    lastFullFrameId = currentFrameId
                                 }
-
-                                hasValidBaseFrame = true
-                                lastFullFrameId = currentFrameId
                             }
                         }
                     }
                 }
 
                 if (framesReceived % 30 == 0) {
-                    uiManager.updateStatus("Received $framesReceived frames")
+                    uiManager?.updateStatus("Received $framesReceived frames")
                 }
 
             } catch (e: Exception) {
-                uiManager.updateStatus("Frame reconstruction error: ${e.localizedMessage}")
+                uiManager?.updateStatus("Frame reconstruction error: ${e.localizedMessage}")
             }
         }
     }
@@ -1135,30 +1166,36 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     override fun onDestroy() {
         super.onDestroy()
 
-        mainHandler.post {
-            val bitmapToRecycle = previousBitmap
-            previousBitmap = null
+        // Mark activity as destroyed to prevent any new bitmap operations
+        isActivityDestroyed = true
+        isActivityFinishing = true
 
-            // Clear ImageView first
-            uiManager.clearFrame()
-            uiManager.invalidateImageView()
-
-            // Recycle bitmap with delay
-            if (bitmapToRecycle != null) {
-                recycleBitmapSafely(bitmapToRecycle)
+        // Use bitmap lock to safely clean up bitmaps
+        bitmapLock.withLock {
+            mainHandler.post {
+                recycleBitmapSafely(previousBitmap)
+                previousBitmap = null
             }
-
-            // Clean up handler callbacks
-            recycleHandler.removeCallbacksAndMessages(null)
         }
 
         disconnectFromServer()
 
-        decodingExecutor?.shutdownNow()
-        executorService?.shutdownNow()
+        // Null checks before shutting down executors
+        try {
+            decodingExecutor?.shutdownNow()
+        } catch (e: Exception) {
+            // Ignore shutdown errors
+        }
+
+        try {
+            executorService?.shutdownNow()
+        } catch (e: Exception) {
+            // Ignore shutdown errors
+        }
     }
+
     override fun onBackPressed() {
-        if (uiManager.isInFullscreen()) {
+        if (uiManager != null && uiManager.isInFullscreen() && isBitmapOperationSafe()) {
             uiManager.toggleFullscreen()
         } else {
             super.onBackPressed()

@@ -197,7 +197,6 @@ class UIManager(private val activity: AppCompatActivity) {
 
         //Clear the image BEFORE changing layout to prevent recycled bitmap crash
         val currentBitmap = (ivFrame.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
-        ivFrame.setImageBitmap(null)
         ivFrame.setImageDrawable(null)
 
         // Hide all UI elements except the image
@@ -227,7 +226,6 @@ class UIManager(private val activity: AppCompatActivity) {
         windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
         //Clear the image BEFORE changing layout to prevent recycled bitmap crash
         val currentBitmap = (ivFrame.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
-        ivFrame.setImageBitmap(null)
         ivFrame.setImageDrawable(null)
         // Show all UI elements
         controlsLayout.visibility = View.VISIBLE

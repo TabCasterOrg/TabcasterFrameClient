@@ -26,6 +26,9 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     private var executorService: ExecutorService? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    private val bitmapsToRecycle = mutableListOf<Bitmap>()
+    private val recycleHandler = Handler(Looper.getMainLooper())
+
     private var decodingExecutor: ExecutorService? = null
     private val maxPendingFrames = 2
 
@@ -171,9 +174,16 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         isStreaming = false
 
         mainHandler.post {
-            recycleBitmapSafely(previousBitmap)
-            previousBitmap = null
+            // Clear ImageView first
             uiManager.clearFrame()
+
+            // Then schedule bitmap recycling with delay
+            val bitmapToRecycle = previousBitmap
+            previousBitmap = null
+
+            if (bitmapToRecycle != null) {
+                recycleBitmapSafely(bitmapToRecycle)
+            }
         }
 
         currentFPS = 0f
@@ -191,7 +201,6 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         totalHardwareDecodeTime = 0L
         totalSoftwareDecodeTime = 0L
 
-        // NEW: Reset connection flags explicitly
         lastReceivedFrameId = -1
         expectedFrameId = 0
 
@@ -202,6 +211,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         uiManager.setConnectionState(false)
         uiManager.resetUI()
     }
+
 
     private fun decodeImageHardware(pngData: ByteArray): Bitmap? {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -236,14 +246,32 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     }
 
     private fun recycleBitmapSafely(bitmap: Bitmap?) {
-        try {
-            if (bitmap != null && !bitmap.isRecycled) {
-                bitmap.recycle()
-            }
-        } catch (e: Exception) {
-            // Ignore recycling errors
+        if (bitmap == null || bitmap.isRecycled) return
+
+        // Add to recycle queue and schedule delayed recycling
+        synchronized(bitmapsToRecycle) {
+            bitmapsToRecycle.add(bitmap)
         }
+
+        // Delay recycling to ensure Android rendering pipeline is done with it
+        recycleHandler.postDelayed({
+            synchronized(bitmapsToRecycle) {
+                val toRecycle = bitmapsToRecycle.toList()
+                bitmapsToRecycle.clear()
+
+                toRecycle.forEach { bmp ->
+                    try {
+                        if (!bmp.isRecycled) {
+                            bmp.recycle()
+                        }
+                    } catch (e: Exception) {
+                        // Ignore errors
+                    }
+                }
+            }
+        }, 100) // 100ms delay gives rendering pipeline time to finish
     }
+
 
     private fun updateFPSCalculation() {
         val now = System.currentTimeMillis()
@@ -300,17 +328,23 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                     mainHandler.post {
                         try {
                             if (bitmap.isRecycled) {
-                                uiManager.updateFrameInfo("Cannot display frame: bitmap is recycled")
+                                onSuccess?.invoke(false)
                                 return@post
                             }
 
+                            // Store old bitmap reference before updating ImageView
                             val oldBitmap = previousBitmap
+
+                            // Update reference before displaying
                             previousBitmap = bitmap
 
+                            // Display new bitmap
                             uiManager.displayFrame(bitmap)
 
-                            // Recycle the old bitmap AFTER displaying the new one
-                            recycleBitmapSafely(oldBitmap)
+                            // Schedule old bitmap for delayed recycling
+                            if (oldBitmap != null && oldBitmap != bitmap) {
+                                recycleBitmapSafely(oldBitmap)
+                            }
 
                             updateFPSCalculation()
 
@@ -469,15 +503,19 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                     // Update UI on main thread
                     mainHandler.post {
                         try {
-                            //swap bitmaps atomically to avoid race conditions
+                            // Store old bitmap reference BEFORE any operations
                             val oldBitmap = previousBitmap
+
+                            // Update reference BEFORE displaying
                             previousBitmap = workingBitmap
 
                             // Display the updated frame
                             uiManager.displayFrame(workingBitmap)
 
-                            // Recycle the old bitmap AFTER displaying the new one
-                            recycleBitmapSafely(oldBitmap)
+                            // Schedule old bitmap for delayed recycling
+                            if (oldBitmap != null && oldBitmap != workingBitmap) {
+                                recycleBitmapSafely(oldBitmap)
+                            }
 
                             updateFPSCalculation()
                             if (uiManager.shouldUpdateFrameInfo()) {
@@ -493,6 +531,8 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                             hasValidBaseFrame = true
                         } catch (e: Exception) {
                             uiManager.updateFrameInfo("UI update error: ${e.message}")
+                            // If UI update failed, recycle the working bitmap since it won't be displayed
+                            recycleBitmapSafely(workingBitmap)
                         }
                     }
                 }
@@ -1067,8 +1107,32 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         super.onDestroy()
 
         mainHandler.post {
-            recycleBitmapSafely(previousBitmap)
+            // Clear ImageView first
+            uiManager.clearFrame()
+
+            // Then recycle bitmap with delay
+            val bitmapToRecycle = previousBitmap
             previousBitmap = null
+
+            if (bitmapToRecycle != null) {
+                recycleBitmapSafely(bitmapToRecycle)
+            }
+
+            // Clean up any pending bitmaps
+            recycleHandler.postDelayed({
+                synchronized(bitmapsToRecycle) {
+                    bitmapsToRecycle.forEach { bmp ->
+                        try {
+                            if (!bmp.isRecycled) {
+                                bmp.recycle()
+                            }
+                        } catch (e: Exception) {
+                            // Ignore
+                        }
+                    }
+                    bitmapsToRecycle.clear()
+                }
+            }, 200)
         }
 
         disconnectFromServer()
@@ -1076,7 +1140,6 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         decodingExecutor?.shutdownNow()
         executorService?.shutdownNow()
     }
-
     override fun onBackPressed() {
         if (uiManager.isInFullscreen()) {
             uiManager.toggleFullscreen()

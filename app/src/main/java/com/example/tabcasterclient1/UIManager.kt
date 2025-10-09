@@ -220,7 +220,6 @@ class UIManager(private val activity: AppCompatActivity) {
         val windowInsetsController = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
         windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
 
-        // DON'T clear the image - just change the layout parameters
 
         // Show all UI elements
         controlsLayout.visibility = View.VISIBLE
@@ -376,7 +375,27 @@ class UIManager(private val activity: AppCompatActivity) {
             }
         }
     }
+    // Get current drawable to check if bitmap is displayed
+    fun getCurrentDrawable(): android.graphics.drawable.Drawable? {
+        return if (Looper.myLooper() == Looper.getMainLooper()) {
+            ivFrame.drawable
+        } else {
+            null
+        }
+    }
 
+    // Force ImageView to rebuild its display list
+    fun invalidateImageView() {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            ivFrame.invalidate()
+            ivFrame.requestLayout()
+        } else {
+            mainHandler.post {
+                ivFrame.invalidate()
+                ivFrame.requestLayout()
+            }
+        }
+    }
     fun updateServerResolution(width: Int, height: Int, refreshRate: Float) {
         serverWidth = width
         serverHeight = height

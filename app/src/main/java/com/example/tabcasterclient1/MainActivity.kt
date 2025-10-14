@@ -22,6 +22,8 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
+import android.app.ActivityManager
+import android.content.Context
 
 class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
@@ -72,6 +74,11 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     private var totalSoftwareDecodeTime = 0L
 
     private var isStreaming: Boolean = false
+
+    // Memory monitoring
+    private var activityManager: ActivityManager? = null
+    private val memoryCheckThreshold = 0.85f // 85% memory usage threshold
+    private val lowMemoryThreshold = 0.95f // 95% memory usage threshold
 
     // CRITICAL: Keep mutable software bitmap for delta regions
     private var previousBitmap: Bitmap? = null
@@ -142,6 +149,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         executorService = Executors.newSingleThreadExecutor()
         decodingExecutor = Executors.newSingleThreadExecutor()
 
+        initializeMemoryMonitoring()
         initializeHardwareAcceleration()
 
         uiManager.updateStatus("Ready")
@@ -433,6 +441,120 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         }
     }
 
+    /**
+     * Initialize memory monitoring system.
+     */
+    private fun initializeMemoryMonitoring() {
+        activityManager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+    }
+
+    /**
+     * Check if there's sufficient memory for the operation.
+     * Returns true if memory is available, false if memory pressure is too high.
+     */
+    private fun checkMemoryPressure(): Boolean {
+        return try {
+            val memInfo = ActivityManager.MemoryInfo()
+            activityManager?.getMemoryInfo(memInfo)
+            
+            val availableMemory = memInfo.availMem
+            val totalMemory = memInfo.totalMem
+            val memoryUsage = 1.0f - (availableMemory.toFloat() / totalMemory.toFloat())
+            
+            if (memoryUsage > lowMemoryThreshold) {
+                uiManager.updateStatus("Low memory: ${(memoryUsage * 100).toInt()}% used")
+                false
+            } else if (memoryUsage > memoryCheckThreshold) {
+                uiManager.updateStatus("Memory pressure: ${(memoryUsage * 100).toInt()}% used")
+                true
+            } else {
+                true
+            }
+        } catch (e: Exception) {
+            // If memory check fails, assume it's safe to proceed
+            true
+        }
+    }
+
+    /**
+     * Check if memory is critically low and handle accordingly.
+     * Returns true if operation should proceed, false if should be skipped.
+     */
+    private fun handleMemoryPressure(): Boolean {
+        return try {
+            val memInfo = ActivityManager.MemoryInfo()
+            activityManager?.getMemoryInfo(memInfo)
+            
+            val availableMemory = memInfo.availMem
+            val totalMemory = memInfo.totalMem
+            val memoryUsage = 1.0f - (availableMemory.toFloat() / totalMemory.toFloat())
+            
+            when {
+                memoryUsage > lowMemoryThreshold -> {
+                    // Critical memory pressure - handle low memory scenario and skip frame
+                    handleLowMemoryScenario()
+                    uiManager.updateStatus("Critical memory: ${(memoryUsage * 100).toInt()}% - skipping frame")
+                    false
+                }
+                memoryUsage > memoryCheckThreshold -> {
+                    // High memory pressure - handle low memory scenario but allow operation
+                    handleLowMemoryScenario()
+                    uiManager.updateStatus("Memory pressure: ${(memoryUsage * 100).toInt()}%")
+                    true
+                }
+                else -> true
+            }
+        } catch (e: Exception) {
+            // If memory check fails, assume it's safe to proceed
+            true
+        }
+    }
+
+    /**
+     * Handle low memory scenarios by cleaning up resources and adjusting behavior.
+     * This function is called when memory pressure is detected.
+     */
+    private fun handleLowMemoryScenario() {
+        try {
+            // Force garbage collection
+            System.gc()
+            
+            // Clean up previous bitmap if it exists
+            bitmapLock.withLock {
+                recycleBitmapSafely(previousBitmap)
+                previousBitmap = null
+            }
+            
+            // Reduce pending operations to prevent memory buildup
+            if (pendingDecodes > 1) {
+                pendingDecodes = 1
+            }
+            
+            uiManager.updateStatus("Low memory: cleaned up resources")
+        } catch (e: Exception) {
+            // Log but don't crash
+            android.util.Log.w("MainActivity", "Error handling low memory: ${e.message}")
+        }
+    }
+
+    /**
+     * Get current memory usage percentage for monitoring purposes.
+     * Returns memory usage as a percentage (0.0 to 1.0).
+     */
+    private fun getCurrentMemoryUsage(): Float {
+        return try {
+            val memInfo = ActivityManager.MemoryInfo()
+            activityManager?.getMemoryInfo(memInfo)
+            
+            val availableMemory = memInfo.availMem
+            val totalMemory = memInfo.totalMem
+            1.0f - (availableMemory.toFloat() / totalMemory.toFloat())
+        } catch (e: Exception) {
+            // If memory check fails, return 0 (assume no memory pressure)
+            0.0f
+        }
+    }
+
     private fun updateFPSCalculation() {
         val now = System.currentTimeMillis()
 
@@ -454,6 +576,12 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     private fun displayFrame(pngData: ByteArray, frameId: Int, frameTime: Long, compressedSize: Int, onSuccess: ((Boolean) -> Unit)? = null) {
         // Early exit if streaming is not allowed or cancellation requested
         if (!isStreamingAllowed() || cancellationRequested) {
+            onSuccess?.invoke(false)
+            return
+        }
+
+        // Check memory pressure before proceeding with memory-intensive operation
+        if (!handleMemoryPressure()) {
             onSuccess?.invoke(false)
             return
         }
@@ -535,12 +663,22 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                                 updateFPSCalculation()
 
                                 if (uiManager.shouldUpdateFrameInfo()) {
+                                    val memoryUsage = getCurrentMemoryUsage()
+                                    val memoryText = if (memoryUsage > memoryCheckThreshold) {
+                                        " | Mem: ${(memoryUsage * 100).toInt()}%"
+                                    } else ""
+                                    
                                     uiManager.updateOptimizedFrameInfo(
                                         frameId, frameTime, bitmap.width, bitmap.height, decodeTimeMs,
                                         currentFPS, avgDecodeTime, isHardwareAccelerationSupported,
                                         hardwareDecodeCount, softwareDecodeCount,
                                         totalHardwareDecodeTime, totalSoftwareDecodeTime, droppedFrames
                                     )
+                                    
+                                    // Add memory info to status if there's memory pressure
+                                    if (memoryUsage > memoryCheckThreshold) {
+                                        uiManager.updateStatus("Memory: ${(memoryUsage * 100).toInt()}% used")
+                                    }
                                 }
 
                                 onSuccess?.invoke(true)
@@ -571,6 +709,11 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     private fun processAtomicDeltaOperations(frameData: ByteArray, totalSize: Int, info: FrameInfo, currentFrameId: Int, frameTime: Long) {
         // Early exit if streaming is not allowed or cancellation requested
         if (!isStreamingAllowed() || cancellationRequested) {
+            return
+        }
+
+        // Check memory pressure before proceeding with memory-intensive delta operations
+        if (!handleMemoryPressure()) {
             return
         }
 
@@ -697,12 +840,19 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
                         updateFPSCalculation()
                         if (uiManager.shouldUpdateFrameInfo()) {
+                            val memoryUsage = getCurrentMemoryUsage()
+                            
                             uiManager.updateOptimizedFrameInfo(
                                 currentFrameId, frameTime, tempBitmap.width, tempBitmap.height, 0,
                                 currentFPS, avgDecodeTime, isHardwareAccelerationSupported,
                                 hardwareDecodeCount, softwareDecodeCount,
                                 totalHardwareDecodeTime, totalSoftwareDecodeTime, droppedFrames
                             )
+                            
+                            // Add memory info to status if there's memory pressure
+                            if (memoryUsage > memoryCheckThreshold) {
+                                uiManager.updateStatus("Memory: ${(memoryUsage * 100).toInt()}% used")
+                            }
                         }
 
                         uiManager.updateFrameInfo("Applied $operationsApplied operations (${operations.count { it.magic == "CREG" }} clear, ${operations.count { it.magic == "DREG" }} draw)")
@@ -718,6 +868,12 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
     private fun applyClearOperation(bitmap: Bitmap, op: DeltaOperation, info: FrameInfo) {
         try {
+            // Check memory pressure before bitmap operations
+            if (!checkMemoryPressure()) {
+                uiManager.updateFrameInfo("Memory pressure too high for clear operation")
+                return
+            }
+
             // Null checks for parameters
             if (bitmap == null) {
                 uiManager.updateFrameInfo("Bitmap is null in clear operation")
@@ -771,6 +927,12 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
     private fun applyDrawOperation(bitmap: Bitmap, op: DeltaOperation) {
         try {
+            // Check memory pressure before bitmap operations
+            if (!checkMemoryPressure()) {
+                uiManager.updateFrameInfo("Memory pressure too high for draw operation")
+                return
+            }
+
             // Null checks for parameters
             if (bitmap == null) {
                 uiManager.updateFrameInfo("Bitmap is null in draw operation")

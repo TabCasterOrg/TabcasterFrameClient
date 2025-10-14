@@ -15,6 +15,9 @@ import java.net.InetAddress
 import java.net.SocketTimeoutException
 import java.util.concurrent.Executors
 import java.util.concurrent.ExecutorService
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.CancellationException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.locks.ReentrantLock
@@ -27,6 +30,15 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     private var udpReceiver: UDPReceiver? = null
     private var executorService: ExecutorService? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+    
+    // Cancellation and cleanup tracking
+    private var udpReceiverFuture: Future<*>? = null
+    private val pendingOperations = mutableSetOf<Future<*>>()
+    private val operationLock = ReentrantLock()
+    
+    // Cancellation token for long-running operations
+    @Volatile
+    private var cancellationRequested = false
 
     // Single lock for all bitmap operations to prevent race conditions
     private val bitmapLock = ReentrantLock()
@@ -36,6 +48,10 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     private var isActivityDestroyed = false
     @Volatile
     private var isActivityFinishing = false
+    @Volatile
+    private var isActivityPaused = false
+    @Volatile
+    private var isActivityStopped = false
 
     private var decodingExecutor: ExecutorService? = null
     private val maxPendingFrames = 2
@@ -112,6 +128,9 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         // Reset lifecycle state
         isActivityDestroyed = false
         isActivityFinishing = false
+        isActivityPaused = false
+        isActivityStopped = false
+        cancellationRequested = false
 
         uiManager = UIManager(this)
         uiManager.setCallbacks(this)
@@ -132,20 +151,33 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
     override fun onPause() {
         super.onPause()
-        // Mark activity as potentially finishing to prevent bitmap operations
-        isActivityFinishing = true
+        // Mark activity as paused for tracking purposes
+        isActivityPaused = true
+        
+        // Only cancel operations if we're actually finishing (not just pausing temporarily)
+        if (isFinishing) {
+            isActivityFinishing = true
+            cancelPendingOperations()
+        }
     }
 
     override fun onResume() {
         super.onResume()
         // Reset finishing state when resuming
         isActivityFinishing = false
+        isActivityPaused = false
     }
 
     override fun onStop() {
         super.onStop()
-        // Mark as finishing when stopping to prevent operations during background
-        isActivityFinishing = true
+        // Mark as stopped for tracking purposes
+        isActivityStopped = true
+        
+        // Only cancel operations if we're actually finishing (not just stopping temporarily)
+        if (isFinishing) {
+            isActivityFinishing = true
+            cancelPendingOperations()
+        }
     }
 
     override fun onTryConnect() {
@@ -165,9 +197,102 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     /**
      * Check if bitmap operations are safe to perform.
      * Returns false if activity is destroyed, finishing, or in an unsafe state.
+     * Note: We don't block on paused/stopped states as the app might still be visible and streaming.
      */
     private fun isBitmapOperationSafe(): Boolean {
-        return !isActivityDestroyed && !isActivityFinishing && !isFinishing && !isDestroyed
+        return !isActivityDestroyed && 
+               !isActivityFinishing && 
+               !isFinishing && 
+               !isDestroyed
+    }
+    
+    /**
+     * Cancel all pending operations and drain executor queues.
+     * Prevents operations on destroyed views and cleans up resources properly.
+     */
+    private fun cancelPendingOperations() {
+        // Set cancellation flag for long-running operations
+        cancellationRequested = true
+        
+        operationLock.withLock {
+            // Cancel UDP receiver
+            udpReceiverFuture?.cancel(true)
+            udpReceiverFuture = null
+            
+            // Cancel all pending operations
+            pendingOperations.forEach { future ->
+                try {
+                    future.cancel(true)
+                } catch (e: Exception) {
+                    // Ignore cancellation errors
+                }
+            }
+            pendingOperations.clear()
+        }
+        
+        // Drain executor queues properly
+        drainExecutorQueues()
+    }
+    
+    /**
+     * Drain executor queues to prevent orphaned tasks and memory leaks.
+     * Ensures no orphaned tasks remain in executor queues.
+     */
+    private fun drainExecutorQueues() {
+        try {
+            // Shutdown decoding executor and wait for completion
+            decodingExecutor?.let { executor ->
+                executor.shutdown()
+                try {
+                    if (!executor.awaitTermination(2, TimeUnit.SECONDS)) {
+                        executor.shutdownNow()
+                        if (!executor.awaitTermination(1, TimeUnit.SECONDS)) {
+                            // Log warning but don't crash
+                            android.util.Log.w("MainActivity", "Decoding executor did not terminate")
+                        }
+                    }
+                } catch (e: InterruptedException) {
+                    executor.shutdownNow()
+                    Thread.currentThread().interrupt()
+                }
+            }
+        } catch (e: Exception) {
+            // Log but don't crash
+            android.util.Log.e("MainActivity", "Error draining decoding executor: ${e.message}")
+        }
+    }
+    
+    /**
+     * Track a pending operation for proper cancellation.
+     */
+    private fun trackPendingOperation(future: Future<*>) {
+        operationLock.withLock {
+            pendingOperations.add(future)
+        }
+    }
+    
+    /**
+     * Remove a completed operation from tracking.
+     */
+    private fun untrackPendingOperation(future: Future<*>) {
+        operationLock.withLock {
+            pendingOperations.remove(future)
+        }
+    }
+    
+    /**
+     * Check if cancellation has been requested for long-running operations.
+     */
+    private fun isCancellationRequested(): Boolean {
+        return cancellationRequested
+    }
+    
+    /**
+     * Check if streaming operations should be allowed.
+     * This is more permissive than isBitmapOperationSafe() for streaming.
+     */
+    private fun isStreamingAllowed(): Boolean {
+        return !isActivityDestroyed && !isFinishing && !isDestroyed
     }
 
     override fun onFrameClicked() {
@@ -211,14 +336,24 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
             return
         }
 
+        // Reset finishing state when connecting
+        isActivityFinishing = false
+        
         udpReceiver = UDPReceiver(serverIP, port)
-        executorService!!.submit(udpReceiver)
+        udpReceiverFuture = executorService!!.submit(udpReceiver)
+        trackPendingOperation(udpReceiverFuture!!)
 
         uiManager.setConnectionState(true)
         uiManager.updateStatus("Connecting to $serverIP:$port")
     }
 
     private fun disconnectFromServer() {
+        // Mark as finishing to prevent new operations
+        isActivityFinishing = true
+        
+        // Cancel all pending operations first
+        cancelPendingOperations()
+        
         udpReceiver?.stop()
         udpReceiver = null
         isStreaming = false
@@ -317,8 +452,8 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     }
 
     private fun displayFrame(pngData: ByteArray, frameId: Int, frameTime: Long, compressedSize: Int, onSuccess: ((Boolean) -> Unit)? = null) {
-        // Early exit if activity is not safe for bitmap operations
-        if (!isBitmapOperationSafe()) {
+        // Early exit if streaming is not allowed or cancellation requested
+        if (!isStreamingAllowed() || cancellationRequested) {
             onSuccess?.invoke(false)
             return
         }
@@ -347,10 +482,15 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
         pendingDecodes++
 
-        decodingExecutor!!.submit {
+        // Declare decodeFuture outside the submit block so it can be referenced later
+        val decodeFuture = decodingExecutor!!.submit {
             val decodeStartTime = System.nanoTime()
 
             try {
+                // Check if operation was cancelled
+                if (Thread.currentThread().isInterrupted || cancellationRequested) {
+                    return@submit
+                }
                 val bitmap = decodeImage(pngData)
                 val decodeTimeMs = (System.nanoTime() - decodeStartTime) / 1_000_000
 
@@ -421,11 +561,16 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                 pendingDecodes--
             }
         }
+        
+        // Track the decode operation for cancellation
+        trackPendingOperation(decodeFuture)
+        
+        // Note: untracking will be handled when the operation is cancelled or when the activity is destroyed
     }
 
     private fun processAtomicDeltaOperations(frameData: ByteArray, totalSize: Int, info: FrameInfo, currentFrameId: Int, frameTime: Long) {
-        // Early exit if activity is not safe for bitmap operations
-        if (!isBitmapOperationSafe()) {
+        // Early exit if streaming is not allowed or cancellation requested
+        if (!isStreamingAllowed() || cancellationRequested) {
             return
         }
 
@@ -691,6 +836,8 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
         @Volatile
         private var running = true
+        @Volatile
+        private var cancelled = false
         private var socket: DatagramSocket? = null
         private var frameInfo: FrameInfo? = null
         private val framePackets = mutableMapOf<Int, ByteArray>()
@@ -710,6 +857,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
         fun stop() {
             running = false
+            cancelled = true
             socket?.close()
         }
 
@@ -753,13 +901,20 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                 uiManager.setStreamingState(true)
 
                 val buffer = ByteArray(2048)
-                while (running) {
+                while (running && !cancelled) {
                     val packet = DatagramPacket(buffer, buffer.size)
                     try {
                         socket?.receive(packet)
-                        processReceivedPacket(packet.data, packet.length)
+                        if (!cancelled) {
+                            processReceivedPacket(packet.data, packet.length)
+                        }
                     } catch (e: SocketTimeoutException) {
-                        uiManager.updateStatus("Waiting for data...")
+                        if (!cancelled) {
+                            uiManager.updateStatus("Waiting for data...")
+                        }
+                    } catch (e: CancellationException) {
+                        // Operation was cancelled, exit gracefully
+                        break
                     }
                 }
             } catch (e: Exception) {
@@ -969,7 +1124,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         }
 
         private fun processReceivedPacket(data: ByteArray, length: Int) {
-            if (!handshakeComplete || !displayReady) return
+            if (!handshakeComplete || !displayReady || cancelled) return
 
             try {
                 val dataStr = String(data, 0, length)
@@ -1065,6 +1220,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         }
 
         private fun reconstructAndDisplayFrame(frameTime: Long) {
+            if (cancelled) return
             val info = frameInfo ?: return
 
             try {
@@ -1151,6 +1307,8 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         // Mark activity as destroyed to prevent any new bitmap operations
         isActivityDestroyed = true
         isActivityFinishing = true
+        isActivityPaused = true
+        isActivityStopped = true
 
         // Use bitmap lock to safely clean up bitmaps
         bitmapLock.withLock {
@@ -1161,18 +1319,24 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         }
 
         disconnectFromServer()
+        
+        // Clean up UI manager resources
+        uiManager?.cleanup()
 
-        // Null checks before shutting down executors
+        // Drain executor queues properly
+        drainExecutorQueues()
+        
+        // Shutdown main executor service
         try {
-            decodingExecutor?.shutdownNow()
+            executorService?.shutdown()
+            if (executorService?.awaitTermination(2, TimeUnit.SECONDS) == false) {
+                executorService?.shutdownNow()
+                if (executorService?.awaitTermination(1, TimeUnit.SECONDS) == false) {
+                    android.util.Log.w("MainActivity", "Main executor did not terminate")
+                }
+            }
         } catch (e: Exception) {
-            // Ignore shutdown errors
-        }
-
-        try {
-            executorService?.shutdownNow()
-        } catch (e: Exception) {
-            // Ignore shutdown errors
+            android.util.Log.e("MainActivity", "Error shutting down main executor: ${e.message}")
         }
     }
 

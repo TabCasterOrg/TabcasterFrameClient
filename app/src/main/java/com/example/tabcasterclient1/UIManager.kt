@@ -479,4 +479,23 @@ class UIManager(private val activity: AppCompatActivity) {
             mainHandler.post { resetTask() }
         }
     }
+    
+    /**
+     * Clean up resources when activity is being destroyed.
+     * Removes all callbacks and clears references to prevent memory leaks.
+     */
+    fun cleanup() {
+        // Remove callbacks to prevent memory leaks
+        callbacks = null
+        
+        // Clear any pending UI updates
+        mainHandler.removeCallbacksAndMessages(null)
+        
+        // Reset all state
+        isStreaming = false
+        isFullscreen = false
+        
+        // Clear frame to free bitmap memory
+        clearFrame()
+    }
 }

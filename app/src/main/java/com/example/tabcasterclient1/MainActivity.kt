@@ -655,14 +655,10 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                             }
 
                             try {
-                                uiManager.clearFrame()
-                                
-                                val oldBitmap = previousBitmap
-                                
+                                recycleBitmapSafely(previousBitmap)
+
                                 uiManager.displayFrame(bitmap)
                                 previousBitmap = bitmap
-                                
-                                recycleBitmapSafely(oldBitmap)
 
                                 updateFPSCalculation()
 
@@ -792,6 +788,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         // Apply all operations ATOMICALLY on main thread with bitmap lock
         mainHandler.post {
             bitmapLock.withLock {
+                // Double-check lifecycle state after acquiring lock
                 if (!isBitmapOperationSafe()) {
                     return@withLock
                 }
@@ -834,12 +831,12 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                     }
 
                     if (operationsApplied > 0) {
-                        val oldBitmap = previousBitmap
-                        
-                        uiManager.displayFrame(tempBitmap)
+                        // Atomically swap the bitmap
+                        recycleBitmapSafely(previousBitmap)
                         previousBitmap = tempBitmap
-                        
-                        recycleBitmapSafely(oldBitmap)
+
+                        // Display the updated frame
+                        uiManager.displayFrame(tempBitmap)
 
                         updateFPSCalculation()
                         if (uiManager.shouldUpdateFrameInfo()) {
@@ -1441,9 +1438,8 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                                         // Convert to mutable software bitmap for delta region updates
                                         val mutableCopy = displayedBitmap.copy(Bitmap.Config.ARGB_8888, true)
                                         if (mutableCopy != null) {
-                                            uiManager.displayFrame(mutableCopy)
-                                            previousBitmap = mutableCopy
                                             recycleBitmapSafely(displayedBitmap)
+                                            previousBitmap = mutableCopy
                                         } else {
                                             uiManager.updateFrameInfo("Failed to create mutable bitmap copy")
                                         }

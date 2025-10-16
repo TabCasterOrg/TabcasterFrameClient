@@ -413,6 +413,9 @@ class UIManager(private val activity: AppCompatActivity) {
         // Additional safety check
         if (!bitmap.isRecycled) {
             try {
+                // Clear the old drawable first to prevent drawing recycled bitmaps
+                ivFrame.setImageDrawable(null)
+                ivFrame.invalidate()
                 ivFrame.setImageBitmap(bitmap)
             } catch (e: Exception) {
                 // Log but don't crash

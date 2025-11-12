@@ -27,6 +27,7 @@ import kotlin.concurrent.withLock
 class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
     private lateinit var uiManager: UIManager
+    private lateinit var prefsManager: PrefsManager
 
     private var udpReceiver: UDPReceiver? = null
     private var executorService: ExecutorService? = null
@@ -347,6 +348,10 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
         uiManager.setConnectionState(true)
         uiManager.updateStatus("Connecting to $serverIP:$port")
+
+        // Update prefs
+        //prefsManager.setLastIP()
+        // TODO: Make it so that the prefs are loaded when the application starts
     }
 
     private fun disconnectFromServer() {

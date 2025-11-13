@@ -449,6 +449,11 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     }
 
     private fun displayFrame(pngData: ByteArray, frameId: Int, frameTime: Long, compressedSize: Int, onSuccess: ((Boolean) -> Unit)? = null) {
+        // TEMPORARY DEBUG: Force reset cancellation flag
+        if (cancellationRequested && isStreaming) {
+            android.util.Log.e("MainActivity", "!!! BUG: cancellationRequested=true during streaming! Force resetting...")
+            cancellationRequested = false
+        }
         // Early exit if streaming is not allowed or cancellation requested
         if (!isStreamingAllowed() || cancellationRequested) {
             onSuccess?.invoke(false)

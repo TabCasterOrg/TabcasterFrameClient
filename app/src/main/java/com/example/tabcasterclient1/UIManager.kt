@@ -120,6 +120,10 @@ class UIManager(private val activity: AppCompatActivity) {
                 callbacks?.onFrameClicked()
             }
         }
+
+        // Load IP after views are initialised
+        val lastIP = PrefsManager.getInstance(activity).getLastIP()
+        etServerIP.setText(lastIP)
     }
 
     fun getScreenResolution() {

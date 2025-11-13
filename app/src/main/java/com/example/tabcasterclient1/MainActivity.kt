@@ -315,7 +315,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     }
 
     private fun connectToServer() {
-        val defaultIP = PrefsManager.getInstance(this).getLastIP() // Get the last IP used that connected successfully.
+        val defaultIP = DEFAULT_IP // Get the last IP used that connected successfully.
         val defaultPort = 23532
 
         if (uiManager == null) {

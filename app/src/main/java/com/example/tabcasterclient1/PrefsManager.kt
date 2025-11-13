@@ -2,6 +2,7 @@ package com.example.tabcasterclient1
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
 
 
@@ -15,9 +16,10 @@ class PrefsManager private constructor(context: Context) {
             lastConnectedIP = lastValidIP
             // Save IP Address To Preferences
             prefs.edit().putString("lastConnectedIP", lastValidIP).apply() // Get the editor, put the string in and apply all in one line.
+            print("Set ip to $lastValidIP")
         }
 
-        fun getLastIP(): String? = prefs.getString("lastConnectedIP", null)
+        fun getLastIP(): String = prefs.getString("lastConnectedIP", "").toString()
 
     companion object {
         @Volatile

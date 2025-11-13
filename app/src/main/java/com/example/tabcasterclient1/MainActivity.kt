@@ -315,7 +315,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     }
 
     private fun connectToServer() {
-        val defaultIP = "10.1.10.105"
+        val defaultIP = PrefsManager.getInstance(this).getLastIP() // Get the last IP used that connected successfully.
         val defaultPort = 23532
 
         if (uiManager == null) {
@@ -349,9 +349,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         uiManager.setConnectionState(true)
         uiManager.updateStatus("Connecting to $serverIP:$port")
 
-        // Update prefs
-        //prefsManager.setLastIP()
-        // TODO: Make it so that the prefs are loaded when the application starts
+        PrefsManager.getInstance(this).setLastIP(serverIP) // Update preferences
     }
 
     private fun disconnectFromServer() {

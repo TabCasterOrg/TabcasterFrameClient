@@ -349,6 +349,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         uiManager.setConnectionState(true)
         uiManager.updateStatus("Connecting to $serverIP:$port")
 
+        Toast.makeText(this, "Connecting to $serverIP:$port", Toast.LENGTH_SHORT).show()
         PrefsManager.getInstance(this).setLastIP(serverIP) // Update preferences
     }
 

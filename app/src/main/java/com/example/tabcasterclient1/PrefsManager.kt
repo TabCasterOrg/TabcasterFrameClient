@@ -3,12 +3,14 @@ package com.example.tabcasterclient1
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 
 
 // This is a singleton, and uses context injection
 class PrefsManager private constructor(context: Context) {
         private val prefs = context.applicationContext.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+        private val appContext = context
 
         private lateinit var lastConnectedIP : String
 
@@ -16,7 +18,6 @@ class PrefsManager private constructor(context: Context) {
             lastConnectedIP = lastValidIP
             // Save IP Address To Preferences
             prefs.edit().putString("lastConnectedIP", lastValidIP).apply() // Get the editor, put the string in and apply all in one line.
-            print("Set ip to $lastValidIP")
         }
 
         fun getLastIP(): String = prefs.getString("lastConnectedIP", "").toString()

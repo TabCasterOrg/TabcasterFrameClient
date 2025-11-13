@@ -234,37 +234,14 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
             pendingOperations.clear()
         }
         
-        // Drain executor queues properly
-        drainExecutorQueues()
+
     }
     
     /**
      * Drain executor queues to prevent orphaned tasks and memory leaks.
      * Ensures no orphaned tasks remain in executor queues.
      */
-    private fun drainExecutorQueues() {
-        try {
-            // Shutdown decoding executor and wait for completion
-            decodingExecutor?.let { executor ->
-                executor.shutdown()
-                try {
-                    if (!executor.awaitTermination(2, TimeUnit.SECONDS)) {
-                        executor.shutdownNow()
-                        if (!executor.awaitTermination(1, TimeUnit.SECONDS)) {
-                            // Log warning but don't crash
-                            android.util.Log.w("MainActivity", "Decoding executor did not terminate")
-                        }
-                    }
-                } catch (e: InterruptedException) {
-                    executor.shutdownNow()
-                    Thread.currentThread().interrupt()
-                }
-            }
-        } catch (e: Exception) {
-            // Log but don't crash
-            android.util.Log.e("MainActivity", "Error draining decoding executor: ${e.message}")
-        }
-    }
+
     
     /**
      * Track a pending operation for proper cancellation.
@@ -341,6 +318,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
         // Reset finishing state when connecting
         isActivityFinishing = false
+        cancellationRequested = false
         
         udpReceiver = UDPReceiver(serverIP, port)
         udpReceiverFuture = executorService!!.submit(udpReceiver)
@@ -356,6 +334,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     private fun disconnectFromServer() {
         // Mark as finishing to prevent new operations
         isActivityFinishing = true
+        cancellationRequested = true
         
         // Cancel all pending operations first
         cancelPendingOperations()
@@ -1325,11 +1304,24 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         }
 
         disconnectFromServer()
-        
+
         uiManager?.cleanup()
 
-        drainExecutorQueues()
-        
+        android.util.Log.d("MainActivity", "Shutting down executors permanently")
+
+        // Shutdown decoding executor
+        try {
+            decodingExecutor?.shutdown()
+            if (decodingExecutor?.awaitTermination(2, TimeUnit.SECONDS) == false) {
+                decodingExecutor?.shutdownNow()
+                if (decodingExecutor?.awaitTermination(1, TimeUnit.SECONDS) == false) {
+                    android.util.Log.w("MainActivity", "Decoding executor did not terminate")
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "Error shutting down decoding executor: ${e.message}")
+        }
+
         // Shutdown main executor service
         try {
             executorService?.shutdown()

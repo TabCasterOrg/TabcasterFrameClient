@@ -398,17 +398,23 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     }
 
     private fun decodeImageHardware(pngData: ByteArray): Bitmap? {
+        android.util.Log.d("MainActivity", "decodeImageHardware: attempting ImageDecoder")
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             try {
-                val source = ImageDecoder.createSource(pngData)
-                ImageDecoder.decodeBitmap(source) { decoder, info, source ->
-                    decoder.allocator = ImageDecoder.ALLOCATOR_HARDWARE
+                val source = ImageDecoder.createSource(ByteBuffer.wrap(pngData))
+                val bitmap = ImageDecoder.decodeBitmap(source) { decoder, info, source ->
+                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                    decoder.isMutableRequired = true
                     decoder.setUnpremultipliedRequired(false)
                 }
+                android.util.Log.d("MainActivity", "decodeImageHardware SUCCESS: ${bitmap.width}x${bitmap.height}")
+                bitmap
             } catch (e: Exception) {
+                android.util.Log.e("MainActivity", "decodeImageHardware FAILED, falling back to software", e)
                 decodeImageSoftware(pngData)
             }
         } else {
+            android.util.Log.d("MainActivity", "decodeImageHardware: API < P, using software")
             decodeImageSoftware(pngData)
         }
     }

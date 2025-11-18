@@ -231,12 +231,13 @@ class UIManager(private val activity: AppCompatActivity) {
         // Show all UI elements
         controlsLayout.visibility = View.VISIBLE
         etServerIP.visibility = View.VISIBLE
-        btnConnect.visibility = View.VISIBLE
-        btnDisconnect.visibility = View.VISIBLE
         btnFullscreen.visibility = View.VISIBLE
         tvStatus.visibility = View.VISIBLE
         tvFrameInfo.visibility = View.VISIBLE
         tvResolution.visibility = View.VISIBLE
+
+        // Connect/Disconnect buttons are handled here
+        setConnectionState(isStreaming)
 
         // Reset image scaling
         ivFrame.scaleType = ImageView.ScaleType.FIT_CENTER

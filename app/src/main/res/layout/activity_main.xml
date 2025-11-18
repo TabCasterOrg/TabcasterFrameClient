@@ -101,10 +101,8 @@
                 />
 
             <!-- Disconnect Button (initially hidden) -->
-            <!-- Eventually, maybe, make this a state of the connected button -->
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btn_disconnect"
-                android:enabled="false"
                 android:layout_width="104dp"
                 android:layout_height="match_parent"
                 android:layout_marginStart="8dp"

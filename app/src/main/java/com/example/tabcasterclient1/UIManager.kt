@@ -23,6 +23,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.view.isVisible
 import androidx.core.view.setPadding
 import androidx.core.widget.addTextChangedListener
 import com.google.android.material.textfield.TextInputEditText
@@ -91,6 +92,8 @@ class UIManager(private val activity: AppCompatActivity) {
         // Layouts
         controlsLayout = activity.findViewById(R.id.controlsLayout)
         root = activity.findViewById(R.id.root)
+        // Button State
+        setConnectionState(false) // Removes the disconnect button
     }
 
     fun setupClickListeners() {
@@ -100,18 +103,18 @@ class UIManager(private val activity: AppCompatActivity) {
 
         // This is for the dynamic button text on the connect button.
         etServerIP.addTextChangedListener( object : TextWatcher {
-            override fun afterTextChanged(s: Editable?) {
-                updateConnectButton()
-            }
+                override fun afterTextChanged(s: Editable?) {
+                    updateConnectButton()
+                }
 
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {
-                updateConnectButton()
-            }
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {
+                    updateConnectButton()
+                }
 
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                updateConnectButton()
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    updateConnectButton()
+                }
             }
-        }
         )
 
         // Allow clicking on image to toggle fullscreen when streaming
@@ -161,13 +164,13 @@ class UIManager(private val activity: AppCompatActivity) {
     fun setConnectionState(connected: Boolean) {
         // Ensure UI updates happen on main thread
         if (Looper.myLooper() == Looper.getMainLooper()) {
-            btnConnect.isEnabled = !connected
-            btnDisconnect.isEnabled = connected
+            btnConnect.isVisible = !connected
+            btnDisconnect.isVisible = connected
             etServerIP.isEnabled = !connected
         } else {
             mainHandler.post {
-                btnConnect.isEnabled = !connected
-                btnDisconnect.isEnabled = connected
+                btnConnect.isVisible = !connected
+                btnDisconnect.isVisible = connected
                 etServerIP.isEnabled = !connected
             }
         }

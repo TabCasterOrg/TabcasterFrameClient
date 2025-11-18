@@ -35,6 +35,7 @@ class UIManager(private val activity: AppCompatActivity) {
     private lateinit var btnConnect: Button
     private lateinit var btnDisconnect: Button
     private lateinit var btnFullscreen: Button
+    private lateinit var btnHelp: Button
     private lateinit var tvStatus: TextView
     private lateinit var ivFrame: ImageView
     private lateinit var tvFrameInfo: TextView
@@ -83,6 +84,7 @@ class UIManager(private val activity: AppCompatActivity) {
         // UI Elements
         etServerIP = activity.findViewById(R.id.et_server_ip)
         btnConnect = activity.findViewById(R.id.btn_connect)
+        btnHelp = activity.findViewById(R.id.btn_help)
         btnDisconnect = activity.findViewById(R.id.btn_disconnect)
         btnFullscreen = activity.findViewById(R.id.btn_fullscreen)
         tvStatus = activity.findViewById(R.id.tv_status)
@@ -100,19 +102,20 @@ class UIManager(private val activity: AppCompatActivity) {
         btnConnect.setOnClickListener { onConnectClicked() }
         btnDisconnect.setOnClickListener { callbacks?.onDisconnectClicked() }
         btnFullscreen.setOnClickListener { callbacks?.onFullscreenToggled() }
+        btnHelp.setOnClickListener { onHelpClicked() } // Since this is done just in the UI handler, this shouldn't be a callback.
 
         // This is for the dynamic button text on the connect button.
         etServerIP.addTextChangedListener( object : TextWatcher {
                 override fun afterTextChanged(s: Editable?) {
-                    updateConnectButton()
+                    checkIP()
                 }
 
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {
-                    updateConnectButton()
+                    checkIP()
                 }
 
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                    updateConnectButton()
+                    checkIP()
                 }
             }
         )
@@ -127,6 +130,9 @@ class UIManager(private val activity: AppCompatActivity) {
         // Load IP after views are initialised
         val lastIP = PrefsManager.getInstance(activity).getLastIP()
         etServerIP.setText(lastIP)
+
+        // Set the buttons up correctly
+        checkIP()
     }
 
     fun getScreenResolution() {
@@ -174,6 +180,13 @@ class UIManager(private val activity: AppCompatActivity) {
                 etServerIP.isEnabled = !connected
             }
         }
+    }
+
+    fun checkIP(){
+        var validIP = serverIPIsValid()
+        // Next check the buttons. Also we have the !isFullscreen just in case.
+        btnConnect.isVisible = validIP && !isFullscreen
+        btnHelp.isVisible = !validIP && !isFullscreen
     }
 
     fun getServerIP(): String = etServerIP.text.toString().trim()
@@ -261,36 +274,20 @@ class UIManager(private val activity: AppCompatActivity) {
         }
     }
 
-    private fun updateConnectButton() {
-        // Update the connection button based on what is happening.
-        // First, check if the IP is valid
-        if (serverIPIsValid()) {
-            // If it is, next we check the connection status
-            if (isStreaming) {
-                btnConnect.setText("Streaming")
-            }
-            else {
-                btnConnect.setText("Connect")
-            }
-        }
-        else {
-            btnConnect.setText("Help")
-        }
-    }
-
     private fun onConnectClicked(){
         if (serverIPIsValid()){
             callbacks?.onTryConnect() // Tell the main activity to connect
         }
-        else{
-            // This is a dialog box, to explain how to input the IP address.
-            val builder: AlertDialog.Builder = AlertDialog.Builder(activity)
-            builder.setTitle("Invalid IP Address")
-            val serverIP = etServerIP.text.toString().trim()
-            builder.setMessage("$serverIP is not a valid IP address.\nIP Addresses usually follow the format of XXX.XXX.XX.XXX:XXXX\n\nTo retreive your IP address on Linux systems with NetworkManager installed, use `nmcli` in the Terminal to find your IP address.\nWhen a valid IP address is entered, the help button will become the connect button, and you can attempt to connect to TabCaster.")
-            val dialog: AlertDialog = builder.create()
-            dialog.show()
-        }
+    }
+
+    private fun onHelpClicked(){
+        // This is a dialog box, to explain how to input the IP address.
+        val builder: AlertDialog.Builder = AlertDialog.Builder(activity)
+        builder.setTitle("Invalid IP Address")
+        val serverIP = etServerIP.text.toString().trim()
+        builder.setMessage("$serverIP is not a valid IP address.\nIP Addresses usually follow the format of XXX.XXX.XX.XXX:XXXX\n\nTo retreive your IP address on Linux systems with NetworkManager installed, use `nmcli` in the Terminal to find your IP address.\nWhen a valid IP address is entered, the help button will become the connect button, and you can attempt to connect to TabCaster.")
+        val dialog: AlertDialog = builder.create()
+        dialog.show()
     }
 
     fun isInFullscreen(): Boolean = isFullscreen

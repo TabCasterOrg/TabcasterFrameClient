@@ -226,7 +226,7 @@ class UIManager(private val activity: AppCompatActivity) {
         tvResolution.visibility = View.GONE
 
         // Make image fill screen
-        ivFrame.scaleType = ImageView.ScaleType.FIT_XY
+        ivFrame.scaleType = ImageView.ScaleType.FIT_CENTER
         root.setPadding(0)
 
         updateFullscreenButton()

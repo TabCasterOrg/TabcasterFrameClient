@@ -1,4 +1,4 @@
-package com.example.tabcasterclient1
+package org.tabcaster.android
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory

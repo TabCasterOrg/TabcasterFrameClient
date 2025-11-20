@@ -7,11 +7,11 @@ plugins {
 
 
 android {
-    namespace = "com.example.tabcasterclient1"
+    namespace = "org.tabcaster.android"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.example.tabcasterclient1"
+        applicationId = "org.tabcaster.android"
         minSdk = 24
         targetSdk = 35
         versionCode = 1

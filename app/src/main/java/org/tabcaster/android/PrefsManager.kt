@@ -1,4 +1,4 @@
-package com.example.tabcasterclient1
+package org.tabcaster.android
 
 import android.content.Context
 import android.content.SharedPreferences

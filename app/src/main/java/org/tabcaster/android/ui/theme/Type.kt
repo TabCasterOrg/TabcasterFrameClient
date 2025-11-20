@@ -1,4 +1,4 @@
-package com.example.tabcasterclient1.ui.theme
+package org.tabcaster.android.ui.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle

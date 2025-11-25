@@ -24,10 +24,10 @@ import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 // Removed manual memory management imports - let Android handle memory automatically
 
-class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
+class MainActivity : AppCompatActivity(), UIManager.UICallbacks, RenderingManager.RenderingCallbacks {
 
     private lateinit var uiManager: UIManager
-    private lateinit var prefsManager: PrefsManager
+    private lateinit var renderingManager: RenderingManager
 
     private var udpReceiver: UDPReceiver? = null
     private var executorService: ExecutorService? = null
@@ -56,6 +56,10 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     private var isActivityStopped = false
 
     private var decodingExecutor: ExecutorService? = null
+    private var hardwareDecodeCount = 0
+    private var softwareDecodeCount = 0
+    private var totalHardwareDecodeTime = 0L
+    private var totalSoftwareDecodeTime = 0L
     private val maxPendingFrames = 2
 
     @Volatile
@@ -66,12 +70,6 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     private var totalDecodeTime = 0L
     private var decodedFrameCount = 0
     private var avgDecodeTime = 0f
-
-    private var isHardwareAccelerationSupported = false
-    private var hardwareDecodeCount = 0
-    private var softwareDecodeCount = 0
-    private var totalHardwareDecodeTime = 0L
-    private var totalSoftwareDecodeTime = 0L
 
     private var isStreaming: Boolean = false
 
@@ -85,25 +83,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
     private var hasValidBaseFrame = false
     private var lastFullFrameId = -1
 
-    private val hardwareBitmapOptions = BitmapFactory.Options().apply {
-        inMutable = true
-        inPreferredConfig = Bitmap.Config.ARGB_8888
-        inSampleSize = 1
-        inDither = false
-        inPreferQualityOverSpeed = false
-        inTempStorage = ByteArray(64 * 1024)
-        inJustDecodeBounds = false
-        inScaled = false
-    }
 
-    private val softwareBitmapOptions = BitmapFactory.Options().apply {
-        inMutable = true
-        inPreferredConfig = Bitmap.Config.ARGB_8888
-        inSampleSize = 1
-        inDither = false
-        inPreferQualityOverSpeed = false
-        inTempStorage = ByteArray(32 * 1024)
-    }
 
     private var lastFrameTime = 0L
     private var frameCount = 0
@@ -146,12 +126,14 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         executorService = Executors.newSingleThreadExecutor()
         decodingExecutor = Executors.newSingleThreadExecutor()
 
-        initializeHardwareAcceleration()
+        renderingManager.initializeHardwareAcceleration()
 
         uiManager.updateStatus("Ready")
         uiManager.updateFrameInfo("No frame data")
         uiManager.updateResolutionInfo()
     }
+
+    // Activity Overrides
 
     override fun onPause() {
         super.onPause()
@@ -184,6 +166,8 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         }
     }
 
+    // UI Manager Overrides
+
     override fun onTryConnect() {
         connectToServer()
     }
@@ -196,6 +180,16 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         if (isStreaming && isBitmapOperationSafe()) {
             uiManager.toggleFullscreen()
         }
+    }
+
+    // Rendering Manager Overrides
+
+    override fun decodeImage(pngData: ByteArray): Bitmap? {
+        return renderingManager.decodeImage(pngData)
+    }
+
+    override fun decodeImageSoftware(pngData: ByteArray): Bitmap? {
+        return renderingManager.decodeImageSoftware(pngData)
     }
 
     /**
@@ -282,14 +276,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         }
     }
 
-    private fun initializeHardwareAcceleration() {
-        isHardwareAccelerationSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
-        if (isHardwareAccelerationSupported) {
-            uiManager.updateStatus("Hardware acceleration enabled (ImageDecoder)")
-        } else {
-            uiManager.updateStatus("Using software decoding (BitmapFactory)")
-        }
-    }
+
 
     private fun connectToServer() {
         val defaultIP = DEFAULT_IP // Get the last IP used that connected successfully.
@@ -371,45 +358,6 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         uiManager?.resetUI()
     }
 
-    private fun decodeImageHardware(pngData: ByteArray): Bitmap? {
-        android.util.Log.d("MainActivity", "decodeImageHardware: attempting ImageDecoder")
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            try {
-                val source = ImageDecoder.createSource(ByteBuffer.wrap(pngData))
-                val bitmap = ImageDecoder.decodeBitmap(source) { decoder, info, source ->
-                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
-                    decoder.isMutableRequired = true
-                    decoder.setUnpremultipliedRequired(false)
-                }
-                android.util.Log.d("MainActivity", "decodeImageHardware SUCCESS: ${bitmap.width}x${bitmap.height}")
-                bitmap
-            } catch (e: Exception) {
-                android.util.Log.e("MainActivity", "decodeImageHardware FAILED, falling back to software", e)
-                decodeImageSoftware(pngData)
-            }
-        } else {
-            android.util.Log.d("MainActivity", "decodeImageHardware: API < P, using software")
-            decodeImageSoftware(pngData)
-        }
-    }
-
-    private fun decodeImageSoftware(pngData: ByteArray): Bitmap? {
-        return try {
-            BitmapFactory.decodeByteArray(pngData, 0, pngData.size, softwareBitmapOptions)
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    private fun decodeImage(pngData: ByteArray): Bitmap? {
-        return if (isHardwareAccelerationSupported) {
-            decodeImageHardware(pngData)
-        } else {
-            decodeImageSoftware(pngData)
-        }
-    }
-
-
     private fun updateFPSCalculation() {
         val now = System.currentTimeMillis()
 
@@ -474,7 +422,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                 if (Thread.currentThread().isInterrupted || cancellationRequested) {
                     return@submit
                 }
-                val bitmap = decodeImage(pngData)
+                val bitmap = renderingManager.decodeImage(pngData)
                 val decodeTimeMs = (System.nanoTime() - decodeStartTime) / 1_000_000
 
                 synchronized(this) {
@@ -482,7 +430,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                     decodedFrameCount++
                     avgDecodeTime = totalDecodeTime.toFloat() / decodedFrameCount
 
-                    if (isHardwareAccelerationSupported && bitmap != null) {
+                    if (renderingManager.useHardwareRendering() && bitmap != null) {
                         hardwareDecodeCount++
                         totalHardwareDecodeTime += decodeTimeMs
                     } else {
@@ -519,7 +467,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                                 if (uiManager.shouldUpdateFrameInfo()) {
                                     uiManager.updateOptimizedFrameInfo(
                                         frameId, frameTime, bitmap.width, bitmap.height, decodeTimeMs,
-                                        currentFPS, avgDecodeTime, isHardwareAccelerationSupported,
+                                        currentFPS, avgDecodeTime, renderingManager.useHardwareRendering(),
                                         hardwareDecodeCount, softwareDecodeCount,
                                         totalHardwareDecodeTime, totalSoftwareDecodeTime, droppedFrames
                                     )
@@ -543,7 +491,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                 pendingDecodes--
             }
         }
-        
+
         // Track the decode operation for cancellation
         trackPendingOperation(decodeFuture)
         
@@ -676,7 +624,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
                         if (uiManager.shouldUpdateFrameInfo()) {
                             uiManager.updateOptimizedFrameInfo(
                                 currentFrameId, frameTime, tempBitmap.width, tempBitmap.height, 0,
-                                currentFPS, avgDecodeTime, isHardwareAccelerationSupported,
+                                currentFPS, avgDecodeTime, renderingManager.useHardwareRendering(),
                                 hardwareDecodeCount, softwareDecodeCount,
                                 totalHardwareDecodeTime, totalSoftwareDecodeTime, droppedFrames
                             )
@@ -702,7 +650,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
             }
 
             // Clear operation: restore region from base content
-            val clearBitmap = decodeImageSoftware(op.pngBytes)
+            val clearBitmap = renderingManager.decodeImageSoftware(op.pngBytes)
             if (clearBitmap != null) {
                 // Validate dimensions
                 if (clearBitmap.width == op.rw && clearBitmap.height == op.rh) {
@@ -750,7 +698,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
             }
 
             // Draw operation: apply new content
-            val drawBitmap = decodeImageSoftware(op.pngBytes)
+            val drawBitmap = renderingManager.decodeImageSoftware(op.pngBytes)
             if (drawBitmap != null) {
                 // Validate dimensions
                 if (drawBitmap.width == op.rw && drawBitmap.height == op.rh) {

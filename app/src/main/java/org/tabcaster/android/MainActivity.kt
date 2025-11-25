@@ -295,11 +295,6 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         val defaultIP = DEFAULT_IP // Get the last IP used that connected successfully.
         val defaultPort = 23532
 
-        if (uiManager == null) {
-            Toast.makeText(this, "UI Manager is not initialized", Toast.LENGTH_SHORT).show()
-            return
-        }
-
         val serverIP = uiManager.getServerIP().ifEmpty { defaultIP }
         val portStr = defaultPort.toString()
 
@@ -568,11 +563,6 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
             return
         }
 
-        if (info == null) {
-            uiManager.updateFrameInfo("Frame info is null for delta operations")
-            return
-        }
-
         var offset = 0
         val operations = mutableListOf<DeltaOperation>()
 
@@ -705,20 +695,6 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
 
     private fun applyClearOperation(bitmap: Bitmap, op: DeltaOperation, info: FrameInfo) {
         try {
-            if (bitmap == null) {
-                uiManager.updateFrameInfo("Bitmap is null in clear operation")
-                return
-            }
-
-            if (op == null) {
-                uiManager.updateFrameInfo("Delta operation is null in clear operation")
-                return
-            }
-
-            if (info == null) {
-                uiManager.updateFrameInfo("Frame info is null in clear operation")
-                return
-            }
 
             if (bitmap.isRecycled) {
                 uiManager.updateFrameInfo("Bitmap is recycled in clear operation")
@@ -1336,6 +1312,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks {
         }
     }
 
+    // This still works, but KOtlin's debugging says it's being deprecated.
     override fun onBackPressed() {
         if (uiManager != null && uiManager.isInFullscreen() && isBitmapOperationSafe()) {
             uiManager.toggleFullscreen()

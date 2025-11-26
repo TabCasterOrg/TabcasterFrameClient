@@ -116,6 +116,7 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks, RenderingManage
         isActivityStopped = false
         cancellationRequested = false
 
+        // UI Manager Initialisation
         uiManager = UIManager(this)
         uiManager.setCallbacks(this)
         uiManager.initializeViews()
@@ -123,14 +124,19 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks, RenderingManage
         uiManager.setupClickListeners()
         uiManager.getScreenResolution()
 
-        executorService = Executors.newSingleThreadExecutor()
-        decodingExecutor = Executors.newSingleThreadExecutor()
-
-        renderingManager.initializeHardwareAcceleration()
-
         uiManager.updateStatus("Ready")
         uiManager.updateFrameInfo("No frame data")
         uiManager.updateResolutionInfo()
+
+        // Rendering Manager Initialisation
+        renderingManager = RenderingManager(this)
+        renderingManager.initializeHardwareAcceleration()
+
+        // Execution / Decoding
+        executorService = Executors.newSingleThreadExecutor()
+        decodingExecutor = Executors.newSingleThreadExecutor()
+
+
     }
 
     // Activity Overrides
@@ -183,6 +189,10 @@ class MainActivity : AppCompatActivity(), UIManager.UICallbacks, RenderingManage
     }
 
     // Rendering Manager Overrides
+
+    override fun initializeHardwareAcceleration(): String {
+        return renderingManager.initializeHardwareAcceleration()
+    }
 
     override fun decodeImage(pngData: ByteArray): Bitmap? {
         return renderingManager.decodeImage(pngData)

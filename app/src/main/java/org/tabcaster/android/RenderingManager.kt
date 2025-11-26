@@ -10,6 +10,7 @@ import java.nio.ByteBuffer
 class RenderingManager(private val activity: AppCompatActivity) {
 
     interface RenderingCallbacks{
+        fun initializeHardwareAcceleration(): String
         fun decodeImage(pngData: ByteArray): Bitmap?
         fun decodeImageSoftware(pngData: ByteArray): Bitmap?
     }
@@ -35,13 +36,11 @@ class RenderingManager(private val activity: AppCompatActivity) {
         inTempStorage = ByteArray(32 * 1024)
     }
 
-    fun initializeHardwareAcceleration() {
+    fun initializeHardwareAcceleration() : String {
         isHardwareAccelerationSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
-//        if (isHardwareAccelerationSupported) {
-//            uiManager.updateStatus("Hardware acceleration enabled (ImageDecoder)")
-//        } else {
-//            uiManager.updateStatus("Using software decoding (BitmapFactory)")
-//        }
+        var status = if (isHardwareAccelerationSupported) "Hardware acceleration enabled (ImageDecoder)" else "Using software decoding (BitmapFactory)" // Decide the status message
+        return status
+        // Use uiManager.updateStatus(initializeHardwareAcceleration) in areas where it is needed.
     }
 
     fun decodeImageHardware(pngData: ByteArray): Bitmap? {
